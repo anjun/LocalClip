@@ -28,4 +28,13 @@ public enum HistoryListSelection: Sendable {
         guard let id else { return nil }
         return ids.firstIndex(of: id)
     }
+
+    /// Item id that Return paste should target: selection if still in list, else first.
+    /// Same resolution `AppModel.pasteSelectedItem` uses before calling `pasteItem`.
+    public static func pasteTargetID(selected: String?, in ids: [String]) -> String? {
+        if let idx = index(of: selected, in: ids) {
+            return ids[idx]
+        }
+        return ids.first
+    }
 }

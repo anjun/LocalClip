@@ -316,5 +316,22 @@ struct LocalClipTestRunner {
         expect(HistoryListSelection.itemID(at: 1, in: ids) == "b", "id at index")
         expect(HistoryListSelection.index(of: "c", in: ids) == 2, "index of id")
         expect(HistoryListSelection.index(of: "z", in: ids) == nil, "missing id")
+        // Return paste targets selected id (same entry as click on that row).
+        expect(
+            HistoryListSelection.pasteTargetID(selected: "b", in: ids) == "b",
+            "Return paste targets selected id"
+        )
+        expect(
+            HistoryListSelection.pasteTargetID(selected: "gone", in: ids) == "a",
+            "stale selection falls back to first"
+        )
+        expect(
+            HistoryListSelection.pasteTargetID(selected: nil, in: ids) == "a",
+            "nil selection pastes first"
+        )
+        expect(
+            HistoryListSelection.pasteTargetID(selected: nil, in: []) == nil,
+            "empty list no paste target"
+        )
     }
 }

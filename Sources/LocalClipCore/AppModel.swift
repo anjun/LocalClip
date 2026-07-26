@@ -159,16 +159,13 @@ public final class AppModel: ObservableObject {
         selectedItemID = ids[next]
     }
 
-    /// Paste selected item (Return). Same path as click.
+    /// Paste selected item (Return). Resolves id then calls `pasteItem` — same as click.
     public func pasteSelectedItem() {
         let ids = items.map(\.id)
-        if let idx = HistoryListSelection.index(of: selectedItemID, in: ids) {
-            pasteItem(at: idx)
-            return
-        }
-        if let first = items.first {
-            pasteItem(first)
-        }
+        guard let targetID = HistoryListSelection.pasteTargetID(selected: selectedItemID, in: ids),
+              let item = items.first(where: { $0.id == targetID })
+        else { return }
+        pasteItem(item)
     }
 
     /// Paste item at list index (keyboard). Same path as click.
