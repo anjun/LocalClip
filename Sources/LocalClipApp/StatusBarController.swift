@@ -120,6 +120,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         recheck.isEnabled = true
         menu.addItem(recheck)
 
+        let prefs = NSMenuItem(
+            title: "偏好设置…",
+            action: #selector(openAppSettings(_:)),
+            keyEquivalent: ","
+        )
+        prefs.target = self
+        prefs.isEnabled = true
+        menu.addItem(prefs)
+
         let openSettings = NSMenuItem(
             title: "打开辅助功能设置…",
             action: #selector(openAccessibilitySettings(_:)),
@@ -216,6 +225,21 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let response = alert.runModal()
         if !trusted, response == .alertFirstButtonReturn {
             openAccessibilitySettings(nil)
+        }
+    }
+
+    /// Opens SwiftUI Settings scene (login item, privacy copy) — not system Accessibility.
+    @objc func openAppSettings(_ sender: Any?) {
+        NSApp.activate(ignoringOtherApps: true)
+        // SwiftUI Settings / legacy Preferences selector (macOS 13+).
+        let settingsSel = Selector(("showSettingsWindow:"))
+        let prefsSel = Selector(("showPreferencesWindow:"))
+        if NSApp.responds(to: settingsSel) {
+            NSApp.sendAction(settingsSel, to: nil, from: nil)
+        } else if NSApp.responds(to: prefsSel) {
+            NSApp.sendAction(prefsSel, to: nil, from: nil)
+        } else {
+            model.statusMessage = "无法打开偏好设置窗口"
         }
     }
 

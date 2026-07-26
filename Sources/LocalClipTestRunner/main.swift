@@ -13,6 +13,7 @@ struct LocalClipTestRunner {
         runPasteTests()
         runGuardTests()
         runHasherAndOrdering()
+        runSelectionTests()
         if failures == 0 {
             print("ALL TESTS PASSED")
             exit(0)
@@ -104,6 +105,8 @@ struct LocalClipTestRunner {
                 clock.date = clock.date.addingTimeInterval(1)
                 _ = try store.insertText("item-\(i)")
             }
+            // Prune is async on ingest path; flush synchronously for the assertion.
+            try store.prune()
             let items = try store.allItems()
             expect(items.count == 3, "prune by count keeps 3")
             expect(items.contains { $0.textContent == "item-4" }, "keeps newest")
@@ -115,9 +118,26 @@ struct LocalClipTestRunner {
             _ = try store.insertText("old")
             clock.date = clock.date.addingTimeInterval(8 * 24 * 60 * 60)
             _ = try store.insertText("new")
+            try store.prune()
             let items = try store.allItems()
             expect(items.count == 1, "prune by age")
             expect(items.first?.textContent == "new", "age keeps new")
+        }
+
+        // Ingest returns before async prune must finish (hot-path performance).
+        withStore { store, clock, _ in
+            store.updateSettings(AppSettings(maxItems: 2, maxAgeDays: 7))
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("a")
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("b")
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("c")
+            // Immediately after insert, rows may still be > max until prune runs.
+            let before = try store.allItems().count
+            expect(before >= 2, "insert completes without waiting for prune (\(before) rows)")
+            try store.prune()
+            expect(try store.allItems().count == 2, "sync prune enforces maxItems")
         }
 
         withStore { store, _, root in
@@ -281,5 +301,20 @@ struct LocalClipTestRunner {
         expect(ContentHasher.sha256Hex(ofText: "abc") != ContentHasher.sha256Hex(ofText: "abd"), "hash differs")
         let both = ClipboardCapture(text: "t", imageData: Data([1, 2, 3]))
         expect(CaptureOrdering.plannedRows(for: both).map(\.kind) == [.image, .text], "order image then text")
+    }
+
+    static func runSelectionTests() {
+        print("--- list selection (keyboard) ---")
+        expect(HistoryListSelection.moveIndex(current: nil, count: 0, delta: 1) == nil, "empty no move")
+        expect(HistoryListSelection.moveIndex(current: nil, count: 5, delta: 1) == 0, "down from nil → 0")
+        expect(HistoryListSelection.moveIndex(current: nil, count: 5, delta: -1) == 4, "up from nil → last")
+        expect(HistoryListSelection.moveIndex(current: 0, count: 5, delta: -1) == 0, "clamp top")
+        expect(HistoryListSelection.moveIndex(current: 4, count: 5, delta: 1) == 4, "clamp bottom")
+        expect(HistoryListSelection.moveIndex(current: 2, count: 5, delta: 1) == 3, "down step")
+        expect(HistoryListSelection.moveIndex(current: 2, count: 5, delta: -1) == 1, "up step")
+        let ids = ["a", "b", "c"]
+        expect(HistoryListSelection.itemID(at: 1, in: ids) == "b", "id at index")
+        expect(HistoryListSelection.index(of: "c", in: ids) == 2, "index of id")
+        expect(HistoryListSelection.index(of: "z", in: ids) == nil, "missing id")
     }
 }

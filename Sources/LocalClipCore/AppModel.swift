@@ -17,6 +17,8 @@ public final class AppModel: ObservableObject {
     }
     @Published public var accessibilityTrusted: Bool = false
     @Published public var statusMessage: String?
+    /// Keyboard / visual selection in history list (id of item).
+    @Published public var selectedItemID: String?
 
     public let store: ClipboardStore
     public let selfWriteGuard = SelfWriteGuard()
@@ -40,7 +42,8 @@ public final class AppModel: ObservableObject {
         self.plainTextPaste = loaded.plainTextPaste
         self.store = try ClipboardStore(rootURL: root, settings: loaded)
         setupPasteService()
-        refresh()
+        // Defer history load off init so app chrome appears immediately.
+        // `start()` / panel onAppear call `refreshAsync()`.
     }
 
     private func setupPasteService() {
@@ -82,7 +85,8 @@ public final class AppModel: ObservableObject {
         monitor = mon
         isMonitoring = true
         frontmostTracker.observeFrontmost()
-        // Fix legacy full-size “thumbs” off the main actor (can be multi‑MB decode work).
+        // History + legacy thumbs off the main actor (capture path stays light).
+        refreshAsync()
         let storeRef = store
         Task.detached(priority: .utility) {
             storeRef.repairBloatedThumbnails()
@@ -105,10 +109,72 @@ public final class AppModel: ObservableObject {
             } else {
                 items = try store.search(searchQuery)
             }
+            reconcileSelection()
         } catch {
             statusMessage = "Load failed: \(error)"
         }
         refreshAccessibility()
+    }
+
+    /// Load history off the main actor, then publish items (startup / open panel).
+    public func refreshAsync() {
+        let store = self.store
+        let query = searchQuery
+        Task { @MainActor [weak self] in
+            let loaded: [ClipboardItem]
+            do {
+                loaded = try await Task.detached(priority: .userInitiated) {
+                    if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return try store.allItems()
+                    }
+                    return try store.search(query)
+                }.value
+            } catch {
+                self?.statusMessage = "Load failed: \(error)"
+                return
+            }
+            guard let self else { return }
+            // Drop stale result if user typed a new search meanwhile.
+            if self.searchQuery == query {
+                self.items = loaded
+                self.reconcileSelection()
+            }
+            self.refreshAccessibility()
+        }
+    }
+
+    private func reconcileSelection() {
+        let ids = items.map(\.id)
+        if let selectedItemID, ids.contains(selectedItemID) { return }
+        selectedItemID = ids.first
+    }
+
+    /// Move keyboard selection (↑/↓). Pure index math via HistoryListSelection.
+    public func moveSelection(delta: Int) {
+        let ids = items.map(\.id)
+        let current = HistoryListSelection.index(of: selectedItemID, in: ids)
+        guard let next = HistoryListSelection.moveIndex(current: current, count: ids.count, delta: delta) else {
+            return
+        }
+        selectedItemID = ids[next]
+    }
+
+    /// Paste selected item (Return). Same path as click.
+    public func pasteSelectedItem() {
+        let ids = items.map(\.id)
+        if let idx = HistoryListSelection.index(of: selectedItemID, in: ids) {
+            pasteItem(at: idx)
+            return
+        }
+        if let first = items.first {
+            pasteItem(first)
+        }
+    }
+
+    /// Paste item at list index (keyboard). Same path as click.
+    public func pasteItem(at index: Int) {
+        guard index >= 0, index < items.count else { return }
+        pasteItem(items[index])
     }
 
     public func refreshAccessibility() {

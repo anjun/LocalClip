@@ -67,11 +67,38 @@ struct LocalClipApp: App {
     }
 }
 
+// MARK: - Keyboard router (panel)
+
+/// Routes ↑/↓/Return while panel is key; ignores events when a text field is focused.
+enum HistoryPanelKeyRouter {
+    static func handle(_ event: NSEvent) -> NSEvent? {
+        if let first = NSApp.keyWindow?.firstResponder,
+           first is NSTextView || first is NSTextField {
+            return event
+        }
+        guard let model = AppDelegate.sharedModel else { return event }
+        switch event.keyCode {
+        case 125: // down arrow
+            Task { @MainActor in model.moveSelection(delta: 1) }
+            return nil
+        case 126: // up arrow
+            Task { @MainActor in model.moveSelection(delta: -1) }
+            return nil
+        case 36, 76: // return / enter
+            Task { @MainActor in model.pasteSelectedItem() }
+            return nil
+        default:
+            return event
+        }
+    }
+}
+
 // MARK: - History Panel
 
 struct HistoryPanel: View {
     @EnvironmentObject var model: AppModel
     @State private var hoveredID: String?
+    @State private var keyMonitor: Any?
 
     var body: some View {
         ZStack {
@@ -87,9 +114,28 @@ struct HistoryPanel: View {
         .frame(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
         .preferredColorScheme(.light)
         .onAppear {
-            model.refresh()
+            model.refreshAsync()
             model.refreshAccessibility()
             model.frontmostTracker.observeFrontmost()
+            installKeyMonitor()
+        }
+        .onDisappear {
+            removeKeyMonitor()
+        }
+    }
+
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+        // Read AppModel via shared reference so we never capture a stale View struct.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            HistoryPanelKeyRouter.handle(event)
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
         }
     }
 
@@ -241,7 +287,8 @@ struct HistoryPanel: View {
                     ForEach(model.items) { item in
                         HistoryRow(
                             item: item,
-                            isHovered: hoveredID == item.id
+                            isHovered: hoveredID == item.id,
+                            isSelected: model.selectedItemID == item.id
                         )
                         .contentShape(Rectangle())
                         .onHover { hovering in
@@ -252,7 +299,8 @@ struct HistoryPanel: View {
                             }
                         }
                         .onTapGesture {
-                            // pasteItem closes popover itself — avoid double-close races
+                            model.selectedItemID = item.id
+                            // Same paste entry as Return — never a parallel path.
                             model.pasteItem(item)
                         }
                         .contextMenu {
@@ -351,6 +399,7 @@ struct HistoryPanel: View {
 struct HistoryRow: View {
     let item: ClipboardItem
     var isHovered: Bool = false
+    var isSelected: Bool = false
     @EnvironmentObject var model: AppModel
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
@@ -370,7 +419,7 @@ struct HistoryRow: View {
 
             Spacer(minLength: 0)
 
-            if isHovered {
+            if isHovered || isSelected {
                 Image(systemName: "return")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(LCTheme.ink)
@@ -382,7 +431,7 @@ struct HistoryRow: View {
         .padding(.vertical, 10)
         .background(rowBackground)
         .overlay(alignment: .leading) {
-            if isHovered {
+            if isHovered || isSelected {
                 RoundedRectangle(cornerRadius: 2)
                     .fill(LCTheme.ink)
                     .frame(width: 3)
@@ -427,7 +476,7 @@ struct HistoryRow: View {
             Text(item.textContent ?? "")
                 .font(.system(size: 13, weight: .medium, design: .rounded))
                 .foregroundStyle(LCTheme.textPrimary)
-                .lineLimit(2)
+                .lineLimit(3)
                 .multilineTextAlignment(.leading)
         case .image:
             Text("图片")
@@ -465,13 +514,14 @@ struct HistoryRow: View {
     }
 
     private var rowBackground: some View {
-        RoundedRectangle(cornerRadius: LCTheme.rowRadius, style: .continuous)
-            .fill(isHovered ? LCTheme.inkSoft : LCTheme.paperElevated)
+        let highlight = isHovered || isSelected
+        return RoundedRectangle(cornerRadius: LCTheme.rowRadius, style: .continuous)
+            .fill(highlight ? LCTheme.inkSoft : LCTheme.paperElevated)
             .overlay(
                 RoundedRectangle(cornerRadius: LCTheme.rowRadius, style: .continuous)
-                    .strokeBorder(isHovered ? LCTheme.ink.opacity(0.28) : LCTheme.hairline, lineWidth: 1)
+                    .strokeBorder(highlight ? LCTheme.ink.opacity(0.28) : LCTheme.hairline, lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(isHovered ? 0.06 : 0.03), radius: isHovered ? 6 : 2, y: 1)
+            .shadow(color: Color.black.opacity(highlight ? 0.06 : 0.03), radius: highlight ? 6 : 2, y: 1)
     }
 
     private func placeholder(icon: String) -> some View {

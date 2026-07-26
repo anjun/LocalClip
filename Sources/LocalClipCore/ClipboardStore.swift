@@ -16,6 +16,8 @@ public final class ClipboardStore: @unchecked Sendable {
     private let clock: Clock
     public private(set) var settings: AppSettings
     private let lock = NSLock()
+    /// Retention prune runs off the ingest hot path so copy capture stays responsive.
+    private let pruneQueue = DispatchQueue(label: "com.localclip.store.prune", qos: .utility)
 
     public init(rootURL: URL, settings: AppSettings = .default, clock: Clock = SystemClock()) throws {
         self.rootURL = rootURL
@@ -46,6 +48,7 @@ public final class ClipboardStore: @unchecked Sendable {
           byte_size INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_items_created_at ON items(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_items_kind_created ON items(kind, created_at DESC);
         """)
     }
 
@@ -93,34 +96,47 @@ public final class ClipboardStore: @unchecked Sendable {
             }
         }
 
-        try pruneLocked()
+        // Do not prune while holding the capture lock on the monitor path.
+        schedulePrune()
         return inserted
     }
 
     @discardableResult
     public func insertText(_ text: String, createdAt: Date? = nil, sourceBundleId: String? = nil) throws -> ClipboardItem? {
         lock.lock()
-        defer { lock.unlock() }
         let item = try insertTextLocked(
             text: text,
             createdAt: createdAt ?? clock.now(),
             source: sourceBundleId
         )
-        try pruneLocked()
+        lock.unlock()
+        schedulePrune()
         return item
     }
 
     @discardableResult
     public func insertImage(data: Data, createdAt: Date? = nil, sourceBundleId: String? = nil) throws -> ClipboardItem? {
         lock.lock()
-        defer { lock.unlock() }
         let item = try insertImageLocked(
             data: data,
             createdAt: createdAt ?? clock.now(),
             source: sourceBundleId
         )
-        try pruneLocked()
+        lock.unlock()
+        schedulePrune()
         return item
+    }
+
+    /// Schedule retention prune on a utility queue (never blocks UI / pasteboard tick).
+    public func schedulePrune() {
+        pruneQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                try self.prune()
+            } catch {
+                NSLog("LocalClip prune error: \(error)")
+            }
+        }
     }
 
     // MARK: - Query
