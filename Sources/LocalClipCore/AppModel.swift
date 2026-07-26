@@ -26,6 +26,8 @@ public final class AppModel: ObservableObject {
     @Published public var updateZipURL: URL?
     @Published public private(set) var isCheckingUpdate: Bool = false
     @Published public private(set) var isInstallingUpdate: Bool = false
+    /// 0...1 for determinate progress; nil means indeterminate (use with ProgressView).
+    @Published public private(set) var updateProgress: Double?
     /// Last successful check payload (for install).
     private var lastUpdateResult: UpdateChecker.CheckResult?
 
@@ -298,6 +300,7 @@ public final class AppModel: ObservableObject {
     public func checkForUpdates() {
         guard !isCheckingUpdate, !isInstallingUpdate else { return }
         isCheckingUpdate = true
+        updateProgress = nil
         updateCheckMessage = "正在检查更新…"
         updateAvailable = false
         updateReleaseURL = nil
@@ -306,7 +309,10 @@ public final class AppModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                // Indeterminate pulse while waiting on network
+                self.updateProgress = 0.15
                 let result = try await UpdateChecker.check()
+                self.updateProgress = 1.0
                 self.lastUpdateResult = result
                 self.updateReleaseURL = result.releaseURL
                 self.updateZipURL = result.zipDownloadURL
@@ -323,6 +329,7 @@ public final class AppModel: ObservableObject {
             } catch {
                 self.updateCheckMessage = "检查失败：\(error.localizedDescription)"
                 self.updateAvailable = false
+                self.updateProgress = nil
             }
             self.isCheckingUpdate = false
         }
@@ -341,14 +348,28 @@ public final class AppModel: ObservableObject {
             return
         }
         isInstallingUpdate = true
-        updateCheckMessage = "正在下载并准备安装…"
+        updateProgress = 0
+        updateCheckMessage = "正在下载安装包…"
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                _ = try await UpdateChecker.downloadAndPrepareInstall(zipURL: zip)
+                _ = try await UpdateChecker.downloadAndPrepareInstall(
+                    zipURL: zip,
+                    onProgress: { [weak self] fraction in
+                        Task { @MainActor in
+                            self?.updateProgress = max(0, min(1, fraction))
+                            let pct = Int((fraction * 100).rounded())
+                            if fraction < 0.95 {
+                                self?.updateCheckMessage = "正在下载… \(pct)%"
+                            } else {
+                                self?.updateCheckMessage = "正在准备安装…"
+                            }
+                        }
+                    }
+                )
+                self.updateProgress = 1
                 self.updateCheckMessage = "下载完成，即将退出并安装新版本…"
                 self.statusMessage = "正在安装更新…"
-                // Give UI a beat, then quit so the helper can swap the .app
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 GlobalHotKey.shared.unregister()
                 self.stop()
@@ -356,6 +377,7 @@ public final class AppModel: ObservableObject {
             } catch {
                 self.updateCheckMessage = "更新失败：\(error.localizedDescription)"
                 self.isInstallingUpdate = false
+                self.updateProgress = nil
             }
         }
     }

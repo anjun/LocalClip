@@ -172,20 +172,25 @@ public enum UpdateChecker {
     }
 
     /// Download zip, extract LocalClip.app, schedule replace + relaunch, then caller should quit.
-    /// - Returns: path to the helper script that will finish install after quit (optional logging).
+    /// - Parameter onProgress: fraction 0...1 (download portion ≈ 0...0.9, extract/stage ≈ 0.9...1).
     @discardableResult
     public static func downloadAndPrepareInstall(
         zipURL: URL,
         destination: URL = installDestination(),
         session: URLSession = .shared,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        onProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> URL {
         var request = URLRequest(url: zipURL)
         request.setValue("LocalClip-UpdateInstall", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 300
 
-        let (tempZip, response) = try await session.download(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+        onProgress?(0.02)
+        let tempZip = try await downloadFile(request: request, session: session, onProgress: { frac in
+            // Map download to 0.02...0.90
+            onProgress?(0.02 + frac * 0.88)
+        })
+        if let http = tempZip.response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw CheckError.httpStatus(http.statusCode)
         }
 
@@ -196,7 +201,8 @@ public enum UpdateChecker {
         if fileManager.fileExists(atPath: zipPath.path) {
             try fileManager.removeItem(at: zipPath)
         }
-        try fileManager.moveItem(at: tempZip, to: zipPath)
+        try fileManager.moveItem(at: tempZip.fileURL, to: zipPath)
+        onProgress?(0.9)
 
         let extractDir = work.appendingPathComponent("extract", isDirectory: true)
         try fileManager.createDirectory(at: extractDir, withIntermediateDirectories: true)
@@ -210,6 +216,7 @@ public enum UpdateChecker {
         guard unzip.terminationStatus == 0 else {
             throw CheckError.unzipFailed
         }
+        onProgress?(0.95)
 
         guard let appURL = findAppBundle(in: extractDir, fileManager: fileManager) else {
             throw CheckError.appNotFoundInArchive
@@ -280,6 +287,7 @@ public enum UpdateChecker {
         ]
         try launch.run()
         // Don't wait — returns immediately; script keeps running under nohup
+        onProgress?(1.0)
 
         return scriptURL
     }
@@ -305,5 +313,38 @@ public enum UpdateChecker {
 
     private static func shellEscape(_ path: String) -> String {
         "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Download with Progress reporting (fraction 0...1).
+    private static func downloadFile(
+        request: URLRequest,
+        session: URLSession,
+        onProgress: (@Sendable (Double) -> Void)?
+    ) async throws -> (fileURL: URL, response: URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            final class Box: @unchecked Sendable {
+                var observation: NSKeyValueObservation?
+                var settled = false
+            }
+            let box = Box()
+            let task = session.downloadTask(with: request) { url, response, error in
+                box.observation?.invalidate()
+                guard !box.settled else { return }
+                box.settled = true
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let url, let response else {
+                    continuation.resume(throwing: CheckError.downloadFailed)
+                    return
+                }
+                continuation.resume(returning: (url, response))
+            }
+            box.observation = task.progress.observe(\.fractionCompleted, options: [.new]) { progress, _ in
+                onProgress?(progress.fractionCompleted)
+            }
+            task.resume()
+        }
     }
 }

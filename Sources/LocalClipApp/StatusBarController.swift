@@ -14,6 +14,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var activeContextMenu: NSMenu?
     /// Owned prefs window — SwiftUI Settings scene is unreliable for LSUIElement apps.
     private var preferencesWindow: NSWindow?
+    private var updateProgressController: UpdateProgressController?
 
     init(model: AppModel) {
         self.model = model
@@ -97,15 +98,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         menu.delegate = self
 
-        let hotkeyItem = NSMenuItem(
-            title: "快捷键 \(GlobalHotKey.displayLabel) 切换面板",
-            action: nil,
-            keyEquivalent: ""
-        )
-        hotkeyItem.isEnabled = false
-        menu.addItem(hotkeyItem)
-        menu.addItem(.separator())
-
+        // No keyEquivalents on any item — context menu only, no shortcut side-effects.
         let trustItem = NSMenuItem(
             title: AccessibilityPaste.trustStatusLabel(),
             action: nil,
@@ -123,8 +116,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         recheck.isEnabled = true
         menu.addItem(recheck)
 
-        // No keyEquivalent "," here — that is the system Preferences shortcut and can
-        // auto-fire when the context menu is shown (looks like "right-click opens prefs").
         let prefs = NSMenuItem(
             title: "偏好设置…",
             action: #selector(openAppSettings(_:)),
@@ -163,7 +154,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // Empty keyEquivalent: context menus should not steal ⌘Q / global shortcuts.
         let quitItem = NSMenuItem(
             title: "退出 LocalClip",
             action: #selector(quit(_:)),
@@ -250,10 +240,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc func checkForUpdates(_ sender: Any?) {
-        model.checkForUpdates()
-        // Do not auto-open preferences here — right-click menu must only show the menu;
-        // user can open 偏好设置 explicitly if they want the full update UI.
-        model.statusMessage = model.updateCheckMessage ?? "正在检查更新…"
+        // Dedicated progress window — never open Preferences for updates.
+        if updateProgressController == nil {
+            updateProgressController = UpdateProgressController(model: model)
+        }
+        updateProgressController?.showAndStartCheck()
     }
 
     /// Opens app preferences (login item, privacy). Dedicated window — more reliable
