@@ -36,24 +36,26 @@ public final class MockPasteboard: PasteboardWriting {
 
 public final class PasteService: @unchecked Sendable {
     private let accessibilityChecker: () -> Bool
+    private let attemptAutoPaste: () -> Bool
     private let pasteboard: PasteboardWriting
     private let keystroke: () -> Void
     private let selfWriteGuard: SelfWriteGuard
 
     public init(
         accessibilityChecker: @escaping () -> Bool,
+        attemptAutoPaste: @escaping () -> Bool = { true },
         pasteboard: PasteboardWriting,
         keystroke: @escaping () -> Void,
         selfWriteGuard: SelfWriteGuard
     ) {
         self.accessibilityChecker = accessibilityChecker
+        self.attemptAutoPaste = attemptAutoPaste
         self.pasteboard = pasteboard
         self.keystroke = keystroke
         self.selfWriteGuard = selfWriteGuard
     }
 
     /// - Parameter beforeKeystroke: Runs after pasteboard write and only when auto-paste is used.
-    ///   Use to dismiss LocalClip UI and activate the previous app before ⌘V.
     @discardableResult
     public func paste(
         item: ClipboardItem,
@@ -62,15 +64,16 @@ public final class PasteService: @unchecked Sendable {
         beforeKeystroke: (() -> Void)? = nil
     ) -> PasteResult {
         let trusted = accessibilityChecker()
+        let attempt = attemptAutoPaste()
         let action = PastePolicy.resolve(
             item: item,
             imageData: imageData,
             plainTextMode: plainTextMode,
-            accessibilityTrusted: trusted
+            accessibilityTrusted: trusted,
+            attemptAutoPaste: attempt
         )
 
-        // Documented orchestration must match AutoPasteOrchestration.
-        let expected = AutoPasteOrchestration.steps(accessibilityTrusted: trusted)
+        let expected = AutoPasteOrchestration.steps(accessibilityTrusted: attempt || trusted)
         precondition(!expected.isEmpty)
 
         switch action {
@@ -89,7 +92,6 @@ public final class PasteService: @unchecked Sendable {
             selfWriteGuard.noteChangeCountToIgnore(pasteboard.changeCount)
 
             if case .writeAndAutoPaste = action {
-                // dismiss + activate previous (caller-supplied), then keystroke
                 beforeKeystroke?()
                 keystroke()
                 return .wroteAndAutoPasted

@@ -45,11 +45,15 @@ public final class AppModel: ObservableObject {
 
     private func setupPasteService() {
         let guard_ = selfWriteGuard
+        let tracker = frontmostTracker
         pasteService = PasteService(
             accessibilityChecker: { AccessibilityPaste.isTrusted(prompt: false) },
+            // Always attempt auto-paste by default (ad-hoc trust flag is unreliable).
+            attemptAutoPaste: { AccessibilityPaste.shouldAttemptAutoPaste() },
             pasteboard: systemPasteboard,
             keystroke: {
-                AccessibilityPaste.postCommandV()
+                let pid = tracker.previousExternalApp?.processIdentifier
+                AccessibilityPaste.postCommandV(toPid: pid)
             },
             selfWriteGuard: guard_
         )
@@ -117,32 +121,32 @@ public final class AppModel: ObservableObject {
 
     public func pasteItem(_ item: ClipboardItem) {
         do {
-            // Snapshot target before we become / stay key.
             frontmostTracker.observeFrontmost()
             let target = frontmostTracker.previousExternalApp
             let imageData = try store.loadImageData(for: item)
-            let trusted = AccessibilityPaste.isTrusted(prompt: false)
 
             let result = pasteService.paste(
                 item: item,
                 imageData: imageData,
                 plainTextMode: plainTextPaste,
                 beforeKeystroke: {
-                    // Follow AutoPasteOrchestration: dismiss host UI, activate previous, delay.
                     HostUIDismisser.dismissLocalClipWindows()
+                    AppDelegateClosePopover.shared?()
                     target?.activate(options: [.activateIgnoringOtherApps])
-                    Thread.sleep(forTimeInterval: 0.08)
+                    Thread.sleep(forTimeInterval: 0.12)
                 }
             )
 
-            // If untrusted we still wrote clipboard; no keystroke path.
-            _ = trusted
-
             switch result {
             case .wroteAndAutoPasted:
-                statusMessage = nil
+                if accessibilityTrusted {
+                    statusMessage = nil
+                } else {
+                    // Still tried keystroke; guide if it didn't land.
+                    statusMessage = "已粘贴（若未出现请手动 ⌘V）"
+                }
             case .wroteClipboardOnly:
-                statusMessage = "已复制到剪贴板（请开启辅助功能以自动粘贴，或手动 ⌘V）"
+                statusMessage = "已复制到剪贴板，请 ⌘V"
             case .failed:
                 statusMessage = "粘贴失败"
             case .nothing:
@@ -152,6 +156,7 @@ public final class AppModel: ObservableObject {
             statusMessage = "粘贴失败: \(error)"
         }
     }
+
 
     public func clearHistory() {
         try? store.clearAll()

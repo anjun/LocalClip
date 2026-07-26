@@ -78,36 +78,7 @@ struct HistoryPanel: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
 
-            if !model.accessibilityTrusted {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                        Text("未检测到辅助功能信任（自动粘贴不可用，仍可点选写入剪贴板后 ⌘V）")
-                            .font(.caption)
-                    }
-                    Text("若系统设置里已勾选 LocalClip：请点「退出并重新打开」。仍无效则关掉再打开该开关，或重新安装到「应用程序」文件夹。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        Button("打开系统设置…") {
-                            _ = AccessibilityPaste.isTrusted(prompt: true)
-                            AccessibilityPaste.openSystemSettings()
-                        }
-                        Button("重新检查") {
-                            model.refreshAccessibility()
-                        }
-                        Button("退出并重新打开") {
-                            AccessibilityPaste.relaunchCurrentApp()
-                        }
-                        .keyboardShortcut("r", modifiers: [.command, .shift])
-                    }
-                    .font(.caption)
-                }
-                .padding(8)
-                .background(Color.orange.opacity(0.12))
-                .padding(.horizontal, 8)
-            } else {
+            if model.accessibilityTrusted {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.seal.fill")
                         .foregroundStyle(.green)
@@ -118,6 +89,31 @@ struct HistoryPanel: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 4)
+            } else {
+                // Soft notice: we still attempt auto-paste (ad-hoc trust API is flaky).
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "info.circle.fill")
+                            .foregroundStyle(.blue)
+                        Text("系统未回报「已信任」，但仍会尝试自动粘贴。若内容没贴上，请手动 ⌘V。")
+                            .font(.caption)
+                    }
+                    Text("可选：系统设置中确认勾选 LocalClip 后点「退出并重新打开」。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button("打开系统设置…") {
+                            _ = AccessibilityPaste.isTrusted(prompt: true)
+                            AccessibilityPaste.openSystemSettings()
+                        }
+                        Button("重新检查") { model.refreshAccessibility() }
+                        Button("退出并重新打开") { AccessibilityPaste.relaunchCurrentApp() }
+                    }
+                    .font(.caption)
+                }
+                .padding(8)
+                .background(Color.blue.opacity(0.10))
+                .padding(.horizontal, 8)
             }
 
             if let msg = model.statusMessage {

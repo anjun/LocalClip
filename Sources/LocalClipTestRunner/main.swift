@@ -147,9 +147,26 @@ struct LocalClipTestRunner {
         let a2 = PastePolicy.resolve(item: textItem, imageData: nil, plainTextMode: true, accessibilityTrusted: true)
         expect(a2 == .writeAndAutoPaste(.text("hi")), "text paste payload")
 
-        let a3 = PastePolicy.resolve(item: textItem, imageData: nil, plainTextMode: false, accessibilityTrusted: false)
-        expect(a3 == .writeClipboardOnly(.text("hi")), "degraded clipboard only")
+        // When attemptAutoPaste is false and untrusted → clipboard only
+        let a3 = PastePolicy.resolve(
+            item: textItem,
+            imageData: nil,
+            plainTextMode: false,
+            accessibilityTrusted: false,
+            attemptAutoPaste: false
+        )
+        expect(a3 == .writeClipboardOnly(.text("hi")), "degraded when auto-paste disabled")
         expect(!PastePolicy.requiresAccessibilityKeystroke(a3), "degraded no keystroke flag")
+
+        // Default: attempt auto-paste even if API says untrusted (ad-hoc apps)
+        let a3b = PastePolicy.resolve(
+            item: textItem,
+            imageData: nil,
+            plainTextMode: false,
+            accessibilityTrusted: false,
+            attemptAutoPaste: true
+        )
+        expect(a3b == .writeAndAutoPaste(.text("hi")), "auto-paste despite untrusted flag")
 
         let trustedSteps = AutoPasteOrchestration.steps(accessibilityTrusted: true)
         expect(
@@ -160,12 +177,13 @@ struct LocalClipTestRunner {
         )
         expect(
             AutoPasteOrchestration.steps(accessibilityTrusted: false) == [.writePasteboard],
-            "untrusted only writes pasteboard"
+            "orchestration clipboard-only steps when not attempting"
         )
 
         let board = MockPasteboard()
         let service = PasteService(
             accessibilityChecker: { false },
+            attemptAutoPaste: { false },
             pasteboard: board,
             keystroke: { failures += 1; print("FAIL unexpected keystroke") },
             selfWriteGuard: SelfWriteGuard()
@@ -176,12 +194,13 @@ struct LocalClipTestRunner {
         }
         expect(r == .wroteClipboardOnly, "service degraded result")
         expect(board.lastText == "hi", "service wrote text")
-        expect(!beforeUntrusted, "beforeKeystroke not used when untrusted")
+        expect(!beforeUntrusted, "beforeKeystroke not used when auto-paste off")
 
         let board2 = MockPasteboard()
         var events: [String] = []
         let service2 = PasteService(
-            accessibilityChecker: { true },
+            accessibilityChecker: { false },
+            attemptAutoPaste: { true },
             pasteboard: board2,
             keystroke: { events.append("keystroke") },
             selfWriteGuard: SelfWriteGuard()
@@ -190,7 +209,7 @@ struct LocalClipTestRunner {
         let r2 = service2.paste(item: imgItem, imageData: data, plainTextMode: true) {
             events.append("beforeKeystroke")
         }
-        expect(r2 == .wroteAndAutoPasted, "trusted auto paste")
+        expect(r2 == .wroteAndAutoPasted, "auto paste even when API untrusted")
         expect(board2.lastImage == data, "image written")
         expect(events == ["beforeKeystroke", "keystroke"], "dismiss/activate before keystroke")
 
@@ -199,6 +218,7 @@ struct LocalClipTestRunner {
         let guard_ = SelfWriteGuard()
         let service3 = PasteService(
             accessibilityChecker: { false },
+            attemptAutoPaste: { true },
             pasteboard: board3,
             keystroke: {},
             selfWriteGuard: guard_

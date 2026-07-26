@@ -8,19 +8,21 @@ public enum PastePayload: Equatable, Sendable {
 public enum PasteAction: Equatable, Sendable {
     /// Write pasteboard and attempt ⌘V
     case writeAndAutoPaste(PastePayload)
-    /// Write pasteboard only (Accessibility not trusted)
+    /// Write pasteboard only
     case writeClipboardOnly(PastePayload)
     case nothing
 }
 
 /// Pure decision logic for paste — tested without Accessibility session.
 public enum PastePolicy {
-    /// Resolve what to paste for an item given plain-text mode and Accessibility trust.
+    /// - Parameter attemptAutoPaste: when true, always prefer auto-paste path (default for LocalClip).
+    ///   Ad-hoc apps often get `AXIsProcessTrusted == false` even when enabled in Settings.
     public static func resolve(
         item: ClipboardItem,
         imageData: Data?,
         plainTextMode: Bool,
-        accessibilityTrusted: Bool
+        accessibilityTrusted: Bool,
+        attemptAutoPaste: Bool = true
     ) -> PasteAction {
         let payload: PastePayload?
         switch item.kind {
@@ -34,12 +36,10 @@ public enum PastePolicy {
         }
 
         guard let payload else { return .nothing }
-
-        // plainTextMode only affects text richness; v1 text is already plain.
-        // Kept for API clarity / future rich text.
         _ = plainTextMode
 
-        if accessibilityTrusted {
+        // Prefer auto-paste whenever attemptAutoPaste is true; trust flag only informs UI.
+        if attemptAutoPaste || accessibilityTrusted {
             return .writeAndAutoPaste(payload)
         }
         return .writeClipboardOnly(payload)

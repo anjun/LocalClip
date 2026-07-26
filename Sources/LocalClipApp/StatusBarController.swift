@@ -47,6 +47,9 @@ final class StatusBarController: NSObject {
 
         model.start()
         model.refreshAccessibility()
+        AppDelegateClosePopover.shared = { [weak self] in
+            self?.closePopover()
+        }
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {

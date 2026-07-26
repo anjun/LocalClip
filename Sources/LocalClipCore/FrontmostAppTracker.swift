@@ -69,7 +69,12 @@ public enum HostUIDismisser {
         for window in NSApp.windows {
             window.orderOut(nil)
         }
-        // Accessory apps: also resign active so previous app can become key.
+        NSApp.hide(nil)
         NSApp.deactivate()
     }
+}
+
+/// Optional hook so Core can close AppKit popover without importing app target.
+public enum AppDelegateClosePopover {
+    public static var shared: (() -> Void)?
 }
