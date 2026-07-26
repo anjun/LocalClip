@@ -18,6 +18,10 @@ public final class ClipboardStore: @unchecked Sendable {
     private let lock = NSLock()
     /// Retention prune runs off the ingest hot path so copy capture stays responsive.
     private let pruneQueue = DispatchQueue(label: "com.localclip.store.prune", qos: .utility)
+    /// Schedule body for retention prune. Default: utility-queue async.
+    /// Tests replace with a holder that does not run until flushed, proving insert
+    /// does not wait on prune.
+    public var pruneExecutor: (@escaping () -> Void) -> Void = { _ in }
 
     public init(rootURL: URL, settings: AppSettings = .default, clock: Clock = SystemClock()) throws {
         self.rootURL = rootURL
@@ -25,6 +29,8 @@ public final class ClipboardStore: @unchecked Sendable {
         self.thumbsURL = rootURL.appendingPathComponent("thumbs", isDirectory: true)
         self.clock = clock
         self.settings = settings
+        let queue = self.pruneQueue
+        self.pruneExecutor = { work in queue.async(execute: work) }
 
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: imagesURL, withIntermediateDirectories: true)
@@ -71,65 +77,74 @@ public final class ClipboardStore: @unchecked Sendable {
     /// Per-kind adjacent hash dedupe.
     @discardableResult
     public func ingest(_ capture: ClipboardCapture) throws -> [ClipboardItem] {
-        lock.lock()
-        defer { lock.unlock() }
+        let inserted: [ClipboardItem]
+        do {
+            lock.lock()
+            defer { lock.unlock() }
 
-        var inserted: [ClipboardItem] = []
-        let baseTime = clock.now()
-        let source = capture.sourceBundleId
+            var built: [ClipboardItem] = []
+            let baseTime = clock.now()
+            let source = capture.sourceBundleId
 
-        // When both present: image first in ingest result and in DESC list.
-        // Give image a slightly newer timestamp so ORDER BY created_at DESC lists image above text.
-        let hasBoth = capture.hasImage && capture.hasText
-        let imageTime = hasBoth ? baseTime.addingTimeInterval(0.001) : baseTime
-        let textTime = baseTime
+            // When both present: image first in ingest result and in DESC list.
+            // Give image a slightly newer timestamp so ORDER BY created_at DESC lists image above text.
+            let hasBoth = capture.hasImage && capture.hasText
+            let imageTime = hasBoth ? baseTime.addingTimeInterval(0.001) : baseTime
+            let textTime = baseTime
 
-        if capture.hasImage, let data = capture.imageData {
-            if let item = try insertImageLocked(data: data, createdAt: imageTime, source: source) {
-                inserted.append(item)
+            if capture.hasImage, let data = capture.imageData {
+                if let item = try insertImageLocked(data: data, createdAt: imageTime, source: source) {
+                    built.append(item)
+                }
             }
-        }
 
-        if capture.hasText, let text = capture.text {
-            if let item = try insertTextLocked(text: text, createdAt: textTime, source: source) {
-                inserted.append(item)
+            if capture.hasText, let text = capture.text {
+                if let item = try insertTextLocked(text: text, createdAt: textTime, source: source) {
+                    built.append(item)
+                }
             }
+            inserted = built
         }
-
-        // Do not prune while holding the capture lock on the monitor path.
+        // Prune only after unlock — never on the write-lock critical section.
         schedulePrune()
         return inserted
     }
 
     @discardableResult
     public func insertText(_ text: String, createdAt: Date? = nil, sourceBundleId: String? = nil) throws -> ClipboardItem? {
-        lock.lock()
-        let item = try insertTextLocked(
-            text: text,
-            createdAt: createdAt ?? clock.now(),
-            source: sourceBundleId
-        )
-        lock.unlock()
+        let item: ClipboardItem?
+        do {
+            lock.lock()
+            defer { lock.unlock() }
+            item = try insertTextLocked(
+                text: text,
+                createdAt: createdAt ?? clock.now(),
+                source: sourceBundleId
+            )
+        }
         schedulePrune()
         return item
     }
 
     @discardableResult
     public func insertImage(data: Data, createdAt: Date? = nil, sourceBundleId: String? = nil) throws -> ClipboardItem? {
-        lock.lock()
-        let item = try insertImageLocked(
-            data: data,
-            createdAt: createdAt ?? clock.now(),
-            source: sourceBundleId
-        )
-        lock.unlock()
+        let item: ClipboardItem?
+        do {
+            lock.lock()
+            defer { lock.unlock() }
+            item = try insertImageLocked(
+                data: data,
+                createdAt: createdAt ?? clock.now(),
+                source: sourceBundleId
+            )
+        }
         schedulePrune()
         return item
     }
 
-    /// Schedule retention prune on a utility queue (never blocks UI / pasteboard tick).
+    /// Schedule retention prune off the insert call stack (never blocks UI / pasteboard tick).
     public func schedulePrune() {
-        pruneQueue.async { [weak self] in
+        pruneExecutor { [weak self] in
             guard let self else { return }
             do {
                 try self.prune()

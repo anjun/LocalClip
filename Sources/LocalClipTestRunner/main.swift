@@ -124,20 +124,26 @@ struct LocalClipTestRunner {
             expect(items.first?.textContent == "new", "age keeps new")
         }
 
-        // Ingest returns before async prune must finish (hot-path performance).
+        // Insert must not wait for prune: hold pruneExecutor until we flush.
         withStore { store, clock, _ in
             store.updateSettings(AppSettings(maxItems: 2, maxAgeDays: 7))
+            var held: [() -> Void] = []
+            store.pruneExecutor = { work in held.append(work) }
+
             clock.date = clock.date.addingTimeInterval(1)
             _ = try store.insertText("a")
             clock.date = clock.date.addingTimeInterval(1)
             _ = try store.insertText("b")
             clock.date = clock.date.addingTimeInterval(1)
             _ = try store.insertText("c")
-            // Immediately after insert, rows may still be > max until prune runs.
+
+            // Three inserts scheduled prune thrice but none ran yet → still 3 rows.
             let before = try store.allItems().count
-            expect(before >= 2, "insert completes without waiting for prune (\(before) rows)")
-            try store.prune()
-            expect(try store.allItems().count == 2, "sync prune enforces maxItems")
+            expect(before == 3, "third insert returns before prune runs (count=\(before))")
+            expect(held.count >= 1, "prune was scheduled (not inlined on insert stack)")
+
+            for work in held { work() }
+            expect(try store.allItems().count == 2, "flushing scheduled prune enforces maxItems")
         }
 
         withStore { store, _, root in
