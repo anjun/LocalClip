@@ -34,7 +34,7 @@ package install:
 
 public:
 	@chmod +x "$(ROOT)/Scripts/public-release.sh"
-	@VERSION="$(VERSION)" "$(ROOT)/Scripts/public-release.sh"
+	@export VERSION="$(VERSION)"; "$(ROOT)/Scripts/public-release.sh"
 
 test:
 	@swift run -c release LocalClipTestRunner
