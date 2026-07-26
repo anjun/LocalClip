@@ -18,7 +18,7 @@ Auditable source. No network by default — the app only contacts GitHub when yo
 - Plain-text paste toggle (text only)
 - Global hotkey **⌥C**; in-panel **↑/↓** selection
 - Launch at login (toggle in Preferences)
-- **Check for Updates** via GitHub Releases (manual)
+- **Check for Updates / Install now**: download universal zip from GitHub Releases and replace the app (network only when you click)
 
 ## Requirements
 

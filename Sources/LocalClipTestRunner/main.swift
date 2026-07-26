@@ -353,5 +353,42 @@ struct LocalClipTestRunner {
         expect(UpdateChecker.parseVersion("v1.2.3-beta") == [1, 2, 3], "parse ignores prerelease suffix")
         expect(AppIdentity.githubOwner == "anjun", "github owner")
         expect(AppIdentity.githubRepo == "LocalClip", "github repo")
+
+        // Asset preference for in-app install (zip only)
+        let assets: [[String: Any]] = [
+            ["name": "notes.txt", "browser_download_url": "https://example.com/notes.txt"],
+            [
+                "name": "LocalClip-1.0.1-universal-macos.dmg",
+                "browser_download_url": "https://example.com/a.dmg"
+            ],
+            [
+                "name": "LocalClip-1.0.1-universal-macos.zip",
+                "browser_download_url": "https://example.com/a.zip"
+            ],
+            [
+                "name": "other.zip",
+                "browser_download_url": "https://example.com/o.zip"
+            ]
+        ]
+        let pick = UpdateChecker.preferZipAsset(from: assets)
+        expect(pick?.name == "LocalClip-1.0.1-universal-macos.zip", "prefer universal zip asset")
+        expect(pick?.url.absoluteString == "https://example.com/a.zip", "zip download url")
+
+        let dest = UpdateChecker.installDestination(
+            bundle: Bundle(path: "/tmp") ?? .main,
+            home: URL(fileURLWithPath: "/Users/demo")
+        )
+        expect(
+            dest.path.hasSuffix("Applications/LocalClip.app"),
+            "fallback install path under ~/Applications"
+        )
+
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LC-findapp-\(UUID().uuidString)", isDirectory: true)
+        let nested = work.appendingPathComponent("LocalClip.app", isDirectory: true)
+        try? FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let found = UpdateChecker.findAppBundle(in: work)
+        expect(found?.lastPathComponent == "LocalClip.app", "findAppBundle locates app")
+        try? FileManager.default.removeItem(at: work)
     }
 }

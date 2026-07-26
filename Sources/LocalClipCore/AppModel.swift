@@ -23,7 +23,11 @@ public final class AppModel: ObservableObject {
     @Published public var updateCheckMessage: String?
     @Published public var updateAvailable: Bool = false
     @Published public var updateReleaseURL: URL?
+    @Published public var updateZipURL: URL?
     @Published public private(set) var isCheckingUpdate: Bool = false
+    @Published public private(set) var isInstallingUpdate: Bool = false
+    /// Last successful check payload (for install).
+    private var lastUpdateResult: UpdateChecker.CheckResult?
 
     public let store: ClipboardStore
     public let selfWriteGuard = SelfWriteGuard()
@@ -289,23 +293,28 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// User-initiated GitHub Releases check (only network path).
+    /// User-initiated GitHub Releases check.
     public func checkForUpdates() {
-        guard !isCheckingUpdate else { return }
+        guard !isCheckingUpdate, !isInstallingUpdate else { return }
         isCheckingUpdate = true
         updateCheckMessage = "正在检查更新…"
         updateAvailable = false
         updateReleaseURL = nil
+        updateZipURL = nil
+        lastUpdateResult = nil
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let result = try await UpdateChecker.check()
+                self.lastUpdateResult = result
                 self.updateReleaseURL = result.releaseURL
+                self.updateZipURL = result.zipDownloadURL
                 self.updateAvailable = result.isUpdateAvailable
                 if result.isUpdateAvailable {
+                    let asset = result.zipAssetName.map { " · \($0)" } ?? ""
                     self.updateCheckMessage =
-                        "发现新版本 \(result.latestVersion)（当前 \(result.currentVersion)）"
-                    self.statusMessage = self.updateCheckMessage
+                        "发现新版本 \(result.latestVersion)（当前 \(result.currentVersion)）\(asset)"
+                    self.statusMessage = "发现新版本 \(result.latestVersion)"
                 } else {
                     self.updateCheckMessage =
                         "已是最新版本 \(result.currentVersion)"
@@ -321,6 +330,33 @@ public final class AppModel: ObservableObject {
     public func openUpdatePage() {
         let url = updateReleaseURL ?? AppIdentity.releasesURL
         NSWorkspace.shared.open(url)
+    }
+
+    /// Download universal zip, replace app bundle after quit, relaunch.
+    public func installUpdate() {
+        guard !isInstallingUpdate else { return }
+        guard let zip = updateZipURL ?? lastUpdateResult?.zipDownloadURL else {
+            updateCheckMessage = "没有可下载的安装包，请打开下载页手动安装"
+            return
+        }
+        isInstallingUpdate = true
+        updateCheckMessage = "正在下载并准备安装…"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await UpdateChecker.downloadAndPrepareInstall(zipURL: zip)
+                self.updateCheckMessage = "下载完成，即将退出并安装新版本…"
+                self.statusMessage = "正在安装更新…"
+                // Give UI a beat, then quit so the helper can swap the .app
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                GlobalHotKey.shared.unregister()
+                self.stop()
+                NSApp.terminate(nil)
+            } catch {
+                self.updateCheckMessage = "更新失败：\(error.localizedDescription)"
+                self.isInstallingUpdate = false
+            }
+        }
     }
 }
 

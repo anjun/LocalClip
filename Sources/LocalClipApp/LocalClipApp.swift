@@ -795,15 +795,37 @@ struct SettingsView: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.isCheckingUpdate)
+                    .disabled(model.isCheckingUpdate || model.isInstallingUpdate)
 
                     if model.updateAvailable {
+                        Button {
+                            model.installUpdate()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: model.isInstallingUpdate ? "arrow.down.circle" : "arrow.down.app")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(model.isInstallingUpdate ? "安装中…" : "立即更新")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(LCTheme.ink)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isInstallingUpdate || model.updateZipURL == nil)
+                        .help("下载通用安装包并自动替换当前 App 后重启")
+
                         Button {
                             model.openUpdatePage()
                         } label: {
                             labelChip("打开下载页", systemImage: "safari")
                         }
                         .buttonStyle(.plain)
+                        .disabled(model.isInstallingUpdate)
                     }
 
                     Button {
@@ -814,6 +836,13 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
 
                     Spacer(minLength: 0)
+                }
+
+                if model.updateAvailable {
+                    Text("「立即更新」会下载 GitHub 上的 universal zip，退出后替换本机 LocalClip.app 并重新打开。")
+                        .font(.system(size: 11, weight: .regular, design: .rounded))
+                        .foregroundStyle(LCTheme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
