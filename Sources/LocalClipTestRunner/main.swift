@@ -135,10 +135,8 @@ struct LocalClipTestRunner {
         // Thumbnails must not be full-size dumps (root cause of list jank).
         withStore { store, _, root in
             // Synthetic "large" payload: repeat tiny PNG header+data to exceed maxThumbFileBytes
-            // Real path uses NSImage decode; for non-decodable bulk we still cap thumb size.
+            // Real path uses ImageIO decode; for non-decodable bulk we still cap thumb size.
             var big = Data()
-            // Build a valid larger PNG by tiling via NSImage-less path: ThumbnailMaker falls back.
-            // Use repeated tinyPNG — may not decode as multi-pixel, but preferredThumbData caps size.
             let unit = tinyPNG()
             while big.count < ThumbnailMaker.maxThumbFileBytes + 50_000 {
                 big.append(unit)
@@ -151,6 +149,24 @@ struct LocalClipTestRunner {
             expect(thumbBytes <= ThumbnailMaker.maxThumbFileBytes, "thumb not bloated (\(thumbBytes) bytes)")
             expect(thumbBytes > 0, "thumb non-empty")
         }
+
+        // Off-main thumbnail generation must not crash (was NSImage.lockFocus on monitor queue).
+        print("--- thumb off-main ---")
+        let png = tinyPNG()
+        let group = DispatchGroup()
+        var offMainOK = false
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let thumb = ThumbnailMaker.preferredThumbData(from: png)
+            offMainOK = !thumb.isEmpty && thumb.count <= ThumbnailMaker.maxThumbFileBytes
+            // Concurrent stress: former lockFocus path crashed here under load.
+            for _ in 0..<20 {
+                _ = ThumbnailMaker.makeJPEG(from: png)
+            }
+            group.leave()
+        }
+        _ = group.wait(timeout: .now() + 5)
+        expect(offMainOK, "ImageIO thumb works off main thread")
     }
 
     static func runPasteTests() {

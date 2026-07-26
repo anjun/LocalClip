@@ -82,8 +82,11 @@ public final class AppModel: ObservableObject {
         monitor = mon
         isMonitoring = true
         frontmostTracker.observeFrontmost()
-        // Fix legacy full-size “thumbs” that lag the list to death.
-        store.repairBloatedThumbnails()
+        // Fix legacy full-size “thumbs” off the main actor (can be multi‑MB decode work).
+        let storeRef = store
+        Task.detached(priority: .utility) {
+            storeRef.repairBloatedThumbnails()
+        }
 
         if settings.launchAtLogin {
             registerLoginItem(enabled: true)

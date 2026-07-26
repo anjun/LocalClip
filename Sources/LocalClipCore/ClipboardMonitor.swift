@@ -65,19 +65,30 @@ public final class ClipboardMonitor: ClipboardMonitoring, @unchecked Sendable {
             return
         }
 
+        // NSPasteboard has main-thread affinity. Read there, then ingest on this
+        // background queue (ImageIO thumbs are thread-safe).
+        DispatchQueue.main.async { [weak self] in
+            self?.readAndIngest()
+        }
+    }
+
+    private func readAndIngest() {
         let source = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let capture = pasteboard.readCapture(sourceBundleId: source)
         guard capture.hasText || capture.hasImage else { return }
 
-        do {
-            let inserted = try store.ingest(capture)
-            if !inserted.isEmpty {
-                DispatchQueue.main.async { [weak self] in
-                    self?.onItemsChanged?()
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let inserted = try self.store.ingest(capture)
+                if !inserted.isEmpty {
+                    DispatchQueue.main.async {
+                        self.onItemsChanged?()
+                    }
                 }
+            } catch {
+                NSLog("LocalClip monitor ingest error: \(error)")
             }
-        } catch {
-            NSLog("LocalClip monitor ingest error: \(error)")
         }
     }
 }

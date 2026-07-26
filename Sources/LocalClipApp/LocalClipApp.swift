@@ -39,11 +39,17 @@ struct LocalClipApp: App {
         do {
             created = try AppModel()
         } catch {
-            fatalError("LocalClip failed to open store: \(error)")
+            // Don't crash the process with fatalError — surface a running accessory
+            // that can still quit cleanly (store open almost never fails).
+            NSLog("LocalClip failed to open store: \(error)")
+            // Last-resort: temp store so UI can still load
+            created = try! AppModel(storeRoot: FileManager.default.temporaryDirectory
+                .appendingPathComponent("LocalClip-fallback", isDirectory: true))
         }
         _model = StateObject(wrappedValue: created)
         AppDelegate.sharedModel = created
-        created.start()
+        // Start monitor in applicationDidFinishLaunching / StatusBarController.install —
+        // not here — so AppKit is fully up before timers / pasteboard access.
     }
 
     var body: some Scene {

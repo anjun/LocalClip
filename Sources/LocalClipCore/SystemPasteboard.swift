@@ -21,7 +21,7 @@ public final class SystemPasteboard: PasteboardWriting {
 
     public func writeImageData(_ data: Data) {
         board.clearContents()
-        // Prefer raw bytes — avoids decoding multi‑megapixel images into NSImage just to write.
+        // Prefer raw bytes — never decode multi‑megapixel images on the main thread.
         if isPNG(data) {
             board.setData(data, forType: .png)
             return
@@ -30,8 +30,14 @@ public final class SystemPasteboard: PasteboardWriting {
             board.setData(data, forType: .tiff)
             return
         }
-        if let image = NSImage(data: data) {
-            board.writeObjects([image])
+        if isJPEG(data) {
+            // public.jpeg is widely accepted; avoid NSImage round-trip.
+            board.setData(data, forType: NSPasteboard.PasteboardType("public.jpeg"))
+            return
+        }
+        // Last resort: re-encode via ImageIO (thread-safe) rather than NSImage.
+        if let png = ThumbnailMaker.pngData(from: data) {
+            board.setData(png, forType: .png)
         } else {
             board.setData(data, forType: .png)
         }
@@ -48,6 +54,10 @@ public final class SystemPasteboard: PasteboardWriting {
             || (data[0] == 0x4D && data[1] == 0x4D && data[2] == 0x00 && data[3] == 0x2A)
     }
 
+    private func isJPEG(_ data: Data) -> Bool {
+        data.count >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF
+    }
+
     public func readCapture(sourceBundleId: String?) -> ClipboardCapture {
         var text: String?
         if let s = board.string(forType: .string),
@@ -55,24 +65,17 @@ public final class SystemPasteboard: PasteboardWriting {
             text = s
         }
 
+        // Prefer raw pasteboard bytes. Convert TIFF/other with ImageIO (safe off main).
+        // Never use NSImage here — monitor runs on a background queue.
         var imageData: Data?
         if let data = board.data(forType: .png), !data.isEmpty {
             imageData = data
         } else if let data = board.data(forType: .tiff), !data.isEmpty {
-            if let image = NSImage(data: data),
-               let tiff = image.tiffRepresentation,
-               let rep = NSBitmapImageRep(data: tiff),
-               let png = rep.representation(using: .png, properties: [:]) {
-                imageData = png
-            } else {
-                imageData = data
-            }
-        } else if let objs = board.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
-                  let image = objs.first,
-                  let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:]) {
-            imageData = png
+            imageData = ThumbnailMaker.pngData(from: data) ?? data
+        } else if let data = board.data(forType: NSPasteboard.PasteboardType("public.jpeg")), !data.isEmpty {
+            imageData = ThumbnailMaker.pngData(from: data) ?? data
+        } else if let data = board.data(forType: NSPasteboard.PasteboardType("public.heic")), !data.isEmpty {
+            imageData = ThumbnailMaker.pngData(from: data)
         }
 
         return ClipboardCapture(text: text, imageData: imageData, sourceBundleId: sourceBundleId)
@@ -115,12 +118,17 @@ public enum AccessibilityPaste {
         return true
     }
 
-    /// Post ⌘V. Prefer target PID (more reliable), then session tap, then System Events.
+    /// Post ⌘V. Prefer target PID (more reliable), then session/HID taps.
+    /// System Events AppleScript is a **last resort only when AX is not trusted** —
+    /// running both always caused double-paste and occasional main-thread hangs.
     public static func postCommandV(toPid pid: pid_t? = nil) {
         postCommandVViaCGEvent(toPid: pid)
-        // Fallback after a beat if CGEvent was swallowed (common when trust flag is false).
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) {
-            postCommandVViaSystemEvents()
+        // Only fall back to System Events when the trust flag is false (CGEvent often
+        // swallowed for ad-hoc builds). Avoid double ⌘V when already trusted.
+        if !AXIsProcessTrusted() {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.08) {
+                postCommandVViaSystemEvents()
+            }
         }
     }
 

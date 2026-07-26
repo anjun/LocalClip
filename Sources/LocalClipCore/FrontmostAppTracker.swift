@@ -65,10 +65,19 @@ public enum AutoPasteOrchestration {
 
 public enum HostUIDismisser {
     /// Soft-dismiss LocalClip UI so ⌘V targets the previous app.
-    /// Avoid `NSApp.hide` — on accessory/menu-bar apps it can look like a crash and
-    /// races badly with NSPopover teardown.
+    /// - Do **not** call `NSApp.hide` (looks like a crash on LSUIElement apps).
+    /// - Do **not** `orderOut` every window (can tear down status-item chrome).
+    /// Popover close is handled by `AppDelegateClosePopover`; this only hides
+    /// ordinary titled windows (e.g. Settings) if any are open.
     public static func dismissLocalClipWindows() {
         for window in NSApp.windows where window.isVisible {
+            // Status item / panel chrome — leave alone.
+            let name = String(describing: type(of: window))
+            if name.contains("StatusBar") || name.contains("NSStatusBar") { continue }
+            if window.level.rawValue >= NSWindow.Level.statusBar.rawValue { continue }
+            if window.styleMask.contains(.nonactivatingPanel) { continue }
+            // Only hide user-facing document/settings-style windows.
+            if window.title.isEmpty && window.contentView?.subviews.isEmpty != false { continue }
             window.orderOut(nil)
         }
     }
