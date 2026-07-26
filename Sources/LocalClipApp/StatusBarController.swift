@@ -5,11 +5,13 @@ import LocalClipCore
 /// AppKit status item: left-click opens panel, right-click shows menu (Quit, etc.).
 /// Global hotkey ⌥C toggles the same popover.
 @MainActor
-final class StatusBarController: NSObject {
+final class StatusBarController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private let model: AppModel
     private var permissionTimer: Timer?
+    /// Keep menu alive while open (status-item menu=nil hack used to drop actions).
+    private var activeContextMenu: NSMenu?
 
     init(model: AppModel) {
         self.model = model
@@ -37,7 +39,6 @@ final class StatusBarController: NSObject {
                 .environmentObject(model)
                 .frame(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
         )
-        // Light material under SwiftUI paper panel
         if #available(macOS 10.14, *) {
             host.view.wantsLayer = true
             host.view.layer?.backgroundColor = NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.985, alpha: 1).cgColor
@@ -45,7 +46,6 @@ final class StatusBarController: NSObject {
         pop.contentViewController = host
         popover = pop
 
-        // Re-check Accessibility while untrusted (TCC can lag; also after user returns from Settings).
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.model.refreshAccessibility()
@@ -79,14 +79,20 @@ final class StatusBarController: NSObject {
             return
         }
         if event.type == .rightMouseUp {
-            showContextMenu()
+            showContextMenu(with: event)
         } else {
             togglePopover()
         }
     }
 
-    private func showContextMenu() {
+    private func showContextMenu(with event: NSEvent) {
+        guard let button = statusItem?.button else { return }
+
+        model.refreshAccessibility()
+
         let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = self
 
         let hotkeyItem = NSMenuItem(
             title: "快捷键 \(GlobalHotKey.displayLabel) 切换面板",
@@ -97,45 +103,61 @@ final class StatusBarController: NSObject {
         menu.addItem(hotkeyItem)
         menu.addItem(.separator())
 
-        let trustTitle = model.accessibilityTrusted
-            ? "辅助功能：已信任 ✓"
-            : "辅助功能：未信任"
-        let trustItem = NSMenuItem(title: trustTitle, action: nil, keyEquivalent: "")
+        let trustItem = NSMenuItem(
+            title: AccessibilityPaste.trustStatusLabel(),
+            action: nil,
+            keyEquivalent: ""
+        )
         trustItem.isEnabled = false
         menu.addItem(trustItem)
 
-        menu.addItem(NSMenuItem(
+        let recheck = NSMenuItem(
             title: "重新检查辅助功能",
-            action: #selector(recheckAccessibility),
-            keyEquivalent: "r"
-        ))
-        menu.addItem(NSMenuItem(
+            action: #selector(recheckAccessibility(_:)),
+            keyEquivalent: ""
+        )
+        recheck.target = self
+        recheck.isEnabled = true
+        menu.addItem(recheck)
+
+        let openSettings = NSMenuItem(
             title: "打开辅助功能设置…",
-            action: #selector(openAccessibilitySettings),
+            action: #selector(openAccessibilitySettings(_:)),
             keyEquivalent: ""
-        ))
-        menu.addItem(NSMenuItem(
+        )
+        openSettings.target = self
+        openSettings.isEnabled = true
+        menu.addItem(openSettings)
+
+        let relaunchItem = NSMenuItem(
             title: "退出并重新打开（刷新权限）",
-            action: #selector(relaunch),
+            action: #selector(relaunch(_:)),
             keyEquivalent: ""
-        ))
+        )
+        relaunchItem.target = self
+        relaunchItem.isEnabled = true
+        menu.addItem(relaunchItem)
+
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(
+
+        let quitItem = NSMenuItem(
             title: "退出 LocalClip",
-            action: #selector(quit),
+            action: #selector(quit(_:)),
             keyEquivalent: "q"
-        ))
+        )
+        quitItem.target = self
+        quitItem.isEnabled = true
+        menu.addItem(quitItem)
 
-        for item in menu.items {
-            item.target = self
-        }
+        // Critical: pop up in-place. Do NOT assign statusItem.menu then clear it —
+        // that race cancelled item actions (「重新检查」看起来没反应).
+        activeContextMenu = menu
+        NSMenu.popUpContextMenu(menu, with: event, for: button)
+    }
 
-        // Show menu under status item
-        statusItem?.menu = menu
-        statusItem?.button?.performClick(nil)
-        // Clear so left-click keeps working next time
-        DispatchQueue.main.async { [weak self] in
-            self?.statusItem?.menu = nil
+    func menuDidClose(_ menu: NSMenu) {
+        if menu === activeContextMenu {
+            activeContextMenu = nil
         }
     }
 
@@ -149,7 +171,6 @@ final class StatusBarController: NSObject {
             popover.performClose(nil)
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            // Make key so search field works
             popover.contentViewController?.view.window?.makeKey()
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -159,34 +180,62 @@ final class StatusBarController: NSObject {
         popover?.performClose(nil)
     }
 
-    @objc private func recheckAccessibility() {
+    @objc func recheckAccessibility(_ sender: Any?) {
         model.refreshAccessibility()
-        if model.accessibilityTrusted {
-            model.statusMessage = "辅助功能已生效"
+        let trusted = model.accessibilityTrusted
+        let label = AccessibilityPaste.trustStatusLabel()
+        let detail = AccessibilityPaste.debugStatusLine()
+
+        if trusted {
+            model.statusMessage = "\(label)"
         } else {
-            model.statusMessage = "仍未信任：请在设置中确认已勾选，然后用「退出并重新打开」"
+            model.statusMessage = "仍未信任：请在设置中勾选 LocalClip 后「退出并重新打开」"
+        }
+
+        // Visible feedback even when the history panel is closed.
+        let alert = NSAlert()
+        alert.messageText = label
+        if trusted {
+            alert.informativeText = """
+            自动粘贴应可用。若仍无法粘贴，请「退出并重新打开」一次。
+
+            \(detail)
+            """
+            alert.alertStyle = .informational
+        } else {
+            alert.informativeText = """
+            系统仍报告未授权。请打开「系统设置 → 隐私与安全性 → 辅助功能」，确认 LocalClip 已勾选；改权限后必须完全退出再打开。
+
+            \(detail)
+            """
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "打开设置")
+            alert.addButton(withTitle: "好")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if !trusted, response == .alertFirstButtonReturn {
+            openAccessibilitySettings(nil)
         }
     }
 
-    @objc private func openAccessibilitySettings() {
-        // Prompt once so macOS may register the app in the list
+    @objc func openAccessibilitySettings(_ sender: Any?) {
         _ = AccessibilityPaste.isTrusted(prompt: true)
         AccessibilityPaste.openSystemSettings()
         model.refreshAccessibility()
     }
 
-    @objc private func relaunch() {
+    @objc func relaunch(_ sender: Any?) {
         closePopover()
         AccessibilityPaste.relaunchCurrentApp()
     }
 
-    @objc private func quit() {
+    @objc func quit(_ sender: Any?) {
         GlobalHotKey.shared.unregister()
         model.stop()
         NSApp.terminate(nil)
     }
 
-    /// Prefer bundled template PNG; fall back to SF Symbol.
     private static func makeStatusBarImage() -> NSImage {
         if let url = Bundle.main.url(forResource: "StatusBarIcon", withExtension: "png"),
            let img = NSImage(contentsOf: url) {

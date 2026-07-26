@@ -83,18 +83,25 @@ public final class SystemPasteboard: PasteboardWriting {
 }
 
 public enum AccessibilityPaste {
-    /// API trust flag. Ad-hoc signed apps often stay `false` even when toggled ON in Settings.
+    /// Effective trust for UI + paste: official TCC flag **or** a live AX probe.
+    /// Ad-hoc / multi-path builds often keep `AXIsProcessTrusted() == false` even when
+    /// the user has toggled LocalClip ON in System Settings — the probe catches that.
     public static func isTrusted(prompt: Bool = false) -> Bool {
         if AXIsProcessTrusted() { return true }
+
         let opts = [
             kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt
         ] as CFDictionary
+        // Calling with prompt:true may show the system sheet once.
         if AXIsProcessTrustedWithOptions(opts) { return true }
-        // Probe: can we talk to the AX system-wide element?
+        if AXIsProcessTrusted() { return true }
+
+        // TCC flag lag / ad-hoc identity: if AX answers, treat as trusted for UI.
         return canUseAccessibilityAPI()
     }
 
-    /// Whether a real AX query succeeds (stronger than the trust flag alone).
+    /// Whether Accessibility APIs accept this process (not merely the TCC boolean).
+    /// Returns false only when the system reports API disabled / not trusted.
     public static func canUseAccessibilityAPI() -> Bool {
         let systemWide = AXUIElementCreateSystemWide()
         var ref: CFTypeRef?
@@ -103,8 +110,45 @@ public enum AccessibilityPaste {
             kAXFocusedApplicationAttribute as CFString,
             &ref
         )
-        // kAXErrorSuccess = 0, kAXErrorNoValue = -25212
-        return err == AXError.success || err.rawValue == -25212
+        // kAXErrorAPIDisabled = -25211 → definitely not trusted
+        if err == .apiDisabled || err.rawValue == -25211 {
+            return false
+        }
+        // kAXErrorNotImplemented / failure that means no access
+        if err.rawValue == -25214 { // kAXErrorNotImplemented in some SDKs
+            return false
+        }
+        // Any other code means we got past TCC: success, no value, invalid element, etc.
+        if err == .success || err == .noValue || err.rawValue == -25212 {
+            return true
+        }
+        // Secondary probe: frontmost app element
+        if let app = NSWorkspace.shared.frontmostApplication {
+            let el = AXUIElementCreateApplication(app.processIdentifier)
+            var title: CFTypeRef?
+            let err2 = AXUIElementCopyAttributeValue(el, kAXTitleAttribute as CFString, &title)
+            if err2 == .apiDisabled || err2.rawValue == -25211 {
+                return false
+            }
+            if err2 == .success || err2 == .noValue || err2.rawValue == -25212
+                || err2.rawValue == -25205 /* attribute unsupported */ {
+                return true
+            }
+        }
+        // If first call was not apiDisabled, treat as usable (ad-hoc quirk).
+        return err != .cannotComplete
+    }
+
+    /// Short status for menus: 已信任 / 已就绪 / 未信任
+    public static func trustStatusLabel() -> String {
+        if AXIsProcessTrusted() {
+            return "辅助功能：已信任 ✓"
+        }
+        if canUseAccessibilityAPI() {
+            // Flag false but API works (common with ad-hoc signing)
+            return "辅助功能：已就绪 ✓"
+        }
+        return "辅助功能：未信任"
     }
 
     /// Whether we should attempt auto-paste. Defaults to **always try**:

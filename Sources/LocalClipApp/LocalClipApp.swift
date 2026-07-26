@@ -168,7 +168,7 @@ struct HistoryPanel: View {
                     .fill(LCTheme.success)
                     .frame(width: 6, height: 6)
                     .shadow(color: LCTheme.success.opacity(0.45), radius: 3)
-                Text("自动粘贴就绪")
+                Text(AccessibilityPaste.trustStatusLabel().replacingOccurrences(of: "辅助功能：", with: "") + " · 自动粘贴")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(LCTheme.textSecondary)
                 Spacer()
@@ -512,7 +512,7 @@ struct SettingsView: View {
             }
             Section("权限") {
                 HStack {
-                    Text(model.accessibilityTrusted ? "辅助功能：已信任" : "辅助功能：检测未信任（仍尝试粘贴）")
+                    Text(AccessibilityPaste.trustStatusLabel())
                     Spacer()
                     Button("检查") { model.refreshAccessibility() }
                     Button("系统设置…") {
