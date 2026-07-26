@@ -29,20 +29,30 @@ cd /Users/alex/PycharmProjects/LocalClip
 # 核心逻辑自测（Command Line Tools 无 XCTest 时使用内置 runner）
 swift run LocalClipTestRunner
 
-# 打包 .app
+# 打包 .app（同时安装到 ~/Applications/LocalClip.app，便于辅助功能识别）
 ./Scripts/package-app.sh
 
-# 启动
+# 推荐从「应用程序」启动（权限更稳定）
+open ~/Applications/LocalClip.app
+# 或
 open dist/LocalClip.app
 ```
 
-开发态直接跑可执行文件：
+### 菜单栏操作
 
-```bash
-swift run LocalClip
-```
+| 操作 | 作用 |
+|------|------|
+| **左键** 图标 | 打开历史面板 |
+| **右键** 图标 | 菜单：检查权限 / 打开设置 / **退出并重新打开** / **退出** |
+| 面板底部 **退出** | 退出应用 |
 
-首次自动粘贴前请在辅助功能中授权；否则点选后手动 ⌘V 即可。
+### 辅助功能（自动粘贴）
+
+1. 打开 **系统设置 → 隐私与安全性 → 辅助功能**，勾选 **LocalClip**  
+2. 若面板仍提示未信任：右键图标 → **退出并重新打开**  
+3. 每次 `package-app.sh` 重打包后，若自动粘贴失效，请在列表中 **关掉再打开** LocalClip 开关，然后退出并重新打开 App  
+
+未授权时仍可点选条目写入剪贴板，再手动 ⌘V。
 
 ## 数据位置
 

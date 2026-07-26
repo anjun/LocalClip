@@ -2,13 +2,26 @@ import SwiftUI
 import LocalClipCore
 import AppKit
 
-/// Starts clipboard monitoring at process launch (not when the panel first opens).
+/// Starts clipboard monitoring at process launch; owns AppKit status item.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var sharedModel: AppModel?
+    static var statusBar: StatusBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        AppDelegate.sharedModel?.start()
+        guard let model = AppDelegate.sharedModel else { return }
+        model.start()
+        // Prefer AppKit status item (left panel / right menu) over MenuBarExtra.
+        if AppDelegate.statusBar == nil {
+            let bar = StatusBarController(model: model)
+            bar.install()
+            AppDelegate.statusBar = bar
+        }
+        model.refreshAccessibility()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        AppDelegate.sharedModel?.refreshAccessibility()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -31,30 +44,15 @@ struct LocalClipApp: App {
         }
         _model = StateObject(wrappedValue: created)
         AppDelegate.sharedModel = created
-        // If delegate already finished launching (rare), start immediately.
-        // Normal path: applicationDidFinishLaunching → start().
         created.start()
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            HistoryPanel()
-                .environmentObject(model)
-                .frame(width: 360, height: 480)
-                .onAppear {
-                    // Monitor already running from launch; only refresh UI.
-                    model.refresh()
-                    model.frontmostTracker.observeFrontmost()
-                }
-        } label: {
-            Label("LocalClip", systemImage: "doc.on.clipboard")
-        }
-        .menuBarExtraStyle(.window)
-
+        // Settings window only; menu bar UI is AppKit StatusBarController.
         Settings {
             SettingsView()
                 .environmentObject(model)
-                .frame(width: 360, height: 220)
+                .frame(width: 380, height: 280)
         }
     }
 }
@@ -81,22 +79,45 @@ struct HistoryPanel: View {
                 .padding(.bottom, 8)
 
             if !model.accessibilityTrusted {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("未授予辅助功能：只能写入剪贴板，需手动 ⌘V")
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("未检测到辅助功能信任（自动粘贴不可用，仍可点选写入剪贴板后 ⌘V）")
                             .font(.caption)
-                        Button("打开系统设置…") {
-                            model.requestAccessibility()
-                        }
-                        .font(.caption)
                     }
-                    Spacer()
+                    Text("若系统设置里已勾选 LocalClip：请点「退出并重新打开」。仍无效则关掉再打开该开关，或重新安装到「应用程序」文件夹。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button("打开系统设置…") {
+                            _ = AccessibilityPaste.isTrusted(prompt: true)
+                            AccessibilityPaste.openSystemSettings()
+                        }
+                        Button("重新检查") {
+                            model.refreshAccessibility()
+                        }
+                        Button("退出并重新打开") {
+                            AccessibilityPaste.relaunchCurrentApp()
+                        }
+                        .keyboardShortcut("r", modifiers: [.command, .shift])
+                    }
+                    .font(.caption)
                 }
                 .padding(8)
                 .background(Color.orange.opacity(0.12))
                 .padding(.horizontal, 8)
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Text("辅助功能已生效 · 点选可自动粘贴")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 4)
             }
 
             if let msg = model.statusMessage {
@@ -128,10 +149,15 @@ struct HistoryPanel: View {
                     HistoryRow(item: item)
                         .contentShape(Rectangle())
                         .onTapGesture {
+                            // Close popover first so previous app can activate
+                            AppDelegate.statusBar?.closePopover()
                             model.pasteItem(item)
                         }
                         .contextMenu {
-                            Button("粘贴") { model.pasteItem(item) }
+                            Button("粘贴") {
+                                AppDelegate.statusBar?.closePopover()
+                                model.pasteItem(item)
+                            }
                             Button("删除", role: .destructive) { model.deleteItem(item) }
                         }
                 }
@@ -151,8 +177,18 @@ struct HistoryPanel: View {
                         .foregroundStyle(.green)
                 }
                 Button("刷新") { model.refresh() }
+                Button("退出") {
+                    model.stop()
+                    NSApp.terminate(nil)
+                }
+                .help("退出 LocalClip（菜单栏图标右键也可退出）")
             }
             .padding(8)
+        }
+        .onAppear {
+            model.refresh()
+            model.refreshAccessibility()
+            model.frontmostTracker.observeFrontmost()
         }
     }
 }
@@ -241,12 +277,27 @@ struct SettingsView: View {
                 HStack {
                     Text(model.accessibilityTrusted ? "辅助功能：已信任" : "辅助功能：未信任")
                     Spacer()
-                    Button("检查 / 授权") { model.requestAccessibility() }
+                    Button("检查") { model.refreshAccessibility() }
+                    Button("系统设置…") {
+                        _ = AccessibilityPaste.isTrusted(prompt: true)
+                        AccessibilityPaste.openSystemSettings()
+                    }
+                }
+                if !model.accessibilityTrusted {
+                    Button("退出并重新打开以刷新权限") {
+                        AccessibilityPaste.relaunchCurrentApp()
+                    }
                 }
             }
             Section("保留") {
                 Text("默认最多 200 条，且不超过 7 天。")
                     .font(.caption)
+            }
+            Section("退出") {
+                Button("退出 LocalClip", role: .destructive) {
+                    model.stop()
+                    NSApp.terminate(nil)
+                }
             }
         }
         .padding()

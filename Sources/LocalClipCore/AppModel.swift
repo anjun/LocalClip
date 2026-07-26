@@ -108,9 +108,10 @@ public final class AppModel: ObservableObject {
 
     public func requestAccessibility() {
         _ = AccessibilityPaste.isTrusted(prompt: true)
+        AccessibilityPaste.openSystemSettings()
         refreshAccessibility()
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
+        if !accessibilityTrusted {
+            statusMessage = "授权后请「退出并重新打开」LocalClip"
         }
     }
 
