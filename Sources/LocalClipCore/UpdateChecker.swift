@@ -112,18 +112,22 @@ public enum UpdateChecker {
         return (best.name, best.url)
     }
 
-    /// Destination app path for install (running bundle if .app, else ~/Applications).
+    /// Prefer stable ~/Applications path for updates (TCC identity); fall back to running .app.
     public static func installDestination(
         bundle: Bundle = .main,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
+        let apps = home
+            .appendingPathComponent("Applications", isDirectory: true)
+            .appendingPathComponent("LocalClip.app", isDirectory: true)
+        if FileManager.default.fileExists(atPath: apps.path) {
+            return apps
+        }
         let running = bundle.bundleURL
         if running.pathExtension == "app" {
             return running
         }
-        return home
-            .appendingPathComponent("Applications", isDirectory: true)
-            .appendingPathComponent("LocalClip.app", isDirectory: true)
+        return apps
     }
 
     /// Fetch latest GitHub release and compare to `currentVersion`.
@@ -218,43 +222,64 @@ public enum UpdateChecker {
         try? xattr.run()
         xattr.waitUntilExit()
 
-        let scriptURL = work.appendingPathComponent("install-and-relaunch.sh")
+        // Put install payload outside the work dir we may delete, and log for debugging.
+        let payload = fileManager.temporaryDirectory
+            .appendingPathComponent("LocalClip-update-payload-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: payload, withIntermediateDirectories: true)
+        let stagedApp = payload.appendingPathComponent("LocalClip.app")
+        if fileManager.fileExists(atPath: stagedApp.path) {
+            try fileManager.removeItem(at: stagedApp)
+        }
+        try fileManager.copyItem(at: appURL, to: stagedApp)
+
+        let logFile = fileManager.temporaryDirectory.appendingPathComponent("localclip-update.log")
+        let scriptURL = payload.appendingPathComponent("install-and-relaunch.sh")
         let script = """
         #!/bin/bash
-        set -euo pipefail
-        SRC=\(shellEscape(appURL.path))
+        exec >>\(shellEscape(logFile.path)) 2>&1
+        set -x
+        SRC=\(shellEscape(stagedApp.path))
         DEST=\(shellEscape(destination.path))
-        # Wait for LocalClip to exit so the bundle can be replaced
-        for i in $(seq 1 40); do
-          if ! pgrep -x LocalClip >/dev/null 2>&1; then
+        DEST_DIR=$(dirname "$DEST")
+        mkdir -p "$DEST_DIR"
+        # Wait until no LocalClip process remains (up to ~15s)
+        for i in $(seq 1 60); do
+          if ! /usr/bin/pgrep -x LocalClip >/dev/null 2>&1; then
             break
           fi
           sleep 0.25
         done
-        sleep 0.4
+        # Extra settle time for file locks
+        sleep 1.0
         /usr/bin/xattr -cr "$SRC" 2>/dev/null || true
-        /bin/rm -rf "$DEST"
+        if [[ -e "$DEST" ]]; then
+          /bin/rm -rf "$DEST"
+        fi
         /usr/bin/ditto "$SRC" "$DEST"
         /usr/bin/xattr -cr "$DEST" 2>/dev/null || true
-        # Ad-hoc re-sign so Gatekeeper is less angry on replace
         if command -v codesign >/dev/null; then
           /usr/bin/codesign --force --sign - --identifier "com.localclip.app" "$DEST/Contents/MacOS/LocalClip" 2>/dev/null || true
           /usr/bin/codesign --force --sign - --identifier "com.localclip.app" "$DEST" 2>/dev/null || true
         fi
-        /usr/bin/open "$DEST"
-        # Clean work dir parent
+        # Relaunch: -n forces a new instance; -a path works for .app bundles
+        /usr/bin/open -n -a "$DEST" || /usr/bin/open "$DEST"
+        sleep 0.5
+        # Cleanup staged payload (keep log)
+        /bin/rm -rf \(shellEscape(payload.path))
         /bin/rm -rf \(shellEscape(work.path))
         """
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
 
-        // Launch helper detached so it survives our quit
-        let helper = Process()
-        helper.executableURL = URL(fileURLWithPath: "/bin/bash")
-        helper.arguments = [scriptURL.path]
-        helper.standardOutput = FileHandle.nullDevice
-        helper.standardError = FileHandle.nullDevice
-        try helper.run()
+        // Detach so helper survives app quit (Process alone is often reaped with parent).
+        let launch = Process()
+        launch.executableURL = URL(fileURLWithPath: "/bin/bash")
+        launch.arguments = [
+            "-c",
+            "nohup \(shellEscape(scriptURL.path)) >/dev/null 2>&1 &"
+        ]
+        try launch.run()
+        // Don't wait — returns immediately; script keeps running under nohup
 
         return scriptURL
     }
