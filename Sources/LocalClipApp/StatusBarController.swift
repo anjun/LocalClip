@@ -18,8 +18,9 @@ final class StatusBarController: NSObject {
     func install() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "LocalClip")
+            button.image = Self.makeStatusBarImage()
             button.image?.isTemplate = true
+            button.toolTip = "LocalClip"
             button.target = self
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -158,5 +159,19 @@ final class StatusBarController: NSObject {
     @objc private func quit() {
         model.stop()
         NSApp.terminate(nil)
+    }
+
+    /// Prefer bundled template PNG; fall back to SF Symbol.
+    private static func makeStatusBarImage() -> NSImage {
+        if let url = Bundle.main.url(forResource: "StatusBarIcon", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            img.isTemplate = true
+            img.size = NSSize(width: 18, height: 18)
+            return img
+        }
+        let symbol = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "LocalClip")
+            ?? NSImage(size: NSSize(width: 18, height: 18))
+        symbol.isTemplate = true
+        return symbol
     }
 }

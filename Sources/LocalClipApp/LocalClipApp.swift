@@ -9,6 +9,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // Apply bundle icon (shows in Accessibility, Force Quit, etc.)
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: url) {
+            NSApp.applicationIconImage = icon
+        }
         guard let model = AppDelegate.sharedModel else { return }
         model.start()
         if AppDelegate.statusBar == nil {
@@ -91,21 +96,33 @@ struct HistoryPanel: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [LCTheme.ink, LCTheme.ink.opacity(0.75)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 28, height: 28)
-                    .shadow(color: LCTheme.ink.opacity(0.28), radius: 6, y: 2)
-                Image(systemName: "paperclip")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white)
-                    .rotationEffect(.degrees(-25))
+            // Brand mark: prefer app icon, fall back to ink tile + paperclip
+            Group {
+                if let icon = NSApp.applicationIconImage {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 28, height: 28)
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .shadow(color: LCTheme.ink.opacity(0.22), radius: 5, y: 2)
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [LCTheme.ink, LCTheme.ink.opacity(0.75)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 28, height: 28)
+                            .shadow(color: LCTheme.ink.opacity(0.28), radius: 6, y: 2)
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .rotationEffect(.degrees(-25))
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 1) {

@@ -18,6 +18,14 @@ package_into() {
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   cp "$BIN" "$APP/Contents/MacOS/LocalClip"
   cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+  # App icon (Finder, Accessibility list, Force Quit, etc.)
+  if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
+    cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+  fi
+  # Optional monochrome template for menu bar (if present)
+  if [[ -f "$ROOT/Resources/StatusBarIcon.png" ]]; then
+    cp "$ROOT/Resources/StatusBarIcon.png" "$APP/Contents/Resources/StatusBarIcon.png"
+  fi
   # PkgInfo helps LaunchServices treat us as a real app
   printf 'APPL????' > "$APP/Contents/PkgInfo"
   chmod +x "$APP/Contents/MacOS/LocalClip"
