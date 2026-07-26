@@ -14,6 +14,7 @@ struct LocalClipTestRunner {
         runGuardTests()
         runHasherAndOrdering()
         runSelectionTests()
+        runUpdateCheckerTests()
         if failures == 0 {
             print("ALL TESTS PASSED")
             exit(0)
@@ -339,5 +340,18 @@ struct LocalClipTestRunner {
             HistoryListSelection.pasteTargetID(selected: nil, in: []) == nil,
             "empty list no paste target"
         )
+    }
+
+    static func runUpdateCheckerTests() {
+        print("--- update checker ---")
+        expect(UpdateChecker.normalizeTag("v1.2.3") == "1.2.3", "strip v prefix")
+        expect(UpdateChecker.normalizeTag("1.0.0") == "1.0.0", "plain version")
+        expect(UpdateChecker.compareVersions("1.0.0", "1.0.1") == .orderedAscending, "1.0.0 < 1.0.1")
+        expect(UpdateChecker.compareVersions("1.10.0", "1.2.0") == .orderedDescending, "1.10 > 1.2")
+        expect(UpdateChecker.compareVersions("1.0.0", "1.0.0") == .orderedSame, "equal versions")
+        expect(UpdateChecker.compareVersions("2.0", "2.0.0") == .orderedSame, "pad missing segments")
+        expect(UpdateChecker.parseVersion("v1.2.3-beta") == [1, 2, 3], "parse ignores prerelease suffix")
+        expect(AppIdentity.githubOwner == "anjun", "github owner")
+        expect(AppIdentity.githubRepo == "LocalClip", "github repo")
     }
 }

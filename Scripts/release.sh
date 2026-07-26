@@ -100,13 +100,17 @@ if command -v codesign >/dev/null; then
   codesign --verify --verbose=1 "$APP" 2>&1 || true
 fi
 
-# Install for local use (stable TCC identity path)
-echo "==> Installing to ${INSTALL_DIR}/${PRODUCT_NAME}.app…"
-rm -rf "${INSTALL_DIR}/${PRODUCT_NAME}.app"
-cp -R "$APP" "${INSTALL_DIR}/${PRODUCT_NAME}.app"
-xattr -cr "${INSTALL_DIR}/${PRODUCT_NAME}.app" 2>/dev/null || true
-if command -v codesign >/dev/null; then
-  codesign --force --sign - --identifier "$BUNDLE_ID" "${INSTALL_DIR}/${PRODUCT_NAME}.app" 2>/dev/null || true
+# Install for local use (stable TCC identity path). Skip in CI via SKIP_LOCAL_INSTALL=1.
+if [[ "${SKIP_LOCAL_INSTALL:-0}" != "1" ]]; then
+  echo "==> Installing to ${INSTALL_DIR}/${PRODUCT_NAME}.app…"
+  rm -rf "${INSTALL_DIR}/${PRODUCT_NAME}.app"
+  cp -R "$APP" "${INSTALL_DIR}/${PRODUCT_NAME}.app"
+  xattr -cr "${INSTALL_DIR}/${PRODUCT_NAME}.app" 2>/dev/null || true
+  if command -v codesign >/dev/null; then
+    codesign --force --sign - --identifier "$BUNDLE_ID" "${INSTALL_DIR}/${PRODUCT_NAME}.app" 2>/dev/null || true
+  fi
+else
+  echo "==> SKIP_LOCAL_INSTALL=1 — not copying to ~/Applications"
 fi
 
 echo "==> ZIP package…"

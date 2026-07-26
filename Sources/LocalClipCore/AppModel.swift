@@ -19,6 +19,11 @@ public final class AppModel: ObservableObject {
     @Published public var statusMessage: String?
     /// Keyboard / visual selection in history list (id of item).
     @Published public var selectedItemID: String?
+    /// Last GitHub update-check result (user-initiated).
+    @Published public var updateCheckMessage: String?
+    @Published public var updateAvailable: Bool = false
+    @Published public var updateReleaseURL: URL?
+    @Published public private(set) var isCheckingUpdate: Bool = false
 
     public let store: ClipboardStore
     public let selfWriteGuard = SelfWriteGuard()
@@ -282,6 +287,40 @@ public final class AppModel: ObservableObject {
                 NSLog("LocalClip login item: \(error)")
             }
         }
+    }
+
+    /// User-initiated GitHub Releases check (only network path).
+    public func checkForUpdates() {
+        guard !isCheckingUpdate else { return }
+        isCheckingUpdate = true
+        updateCheckMessage = "正在检查更新…"
+        updateAvailable = false
+        updateReleaseURL = nil
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await UpdateChecker.check()
+                self.updateReleaseURL = result.releaseURL
+                self.updateAvailable = result.isUpdateAvailable
+                if result.isUpdateAvailable {
+                    self.updateCheckMessage =
+                        "发现新版本 \(result.latestVersion)（当前 \(result.currentVersion)）"
+                    self.statusMessage = self.updateCheckMessage
+                } else {
+                    self.updateCheckMessage =
+                        "已是最新版本 \(result.currentVersion)"
+                }
+            } catch {
+                self.updateCheckMessage = "检查失败：\(error.localizedDescription)"
+                self.updateAvailable = false
+            }
+            self.isCheckingUpdate = false
+        }
+    }
+
+    public func openUpdatePage() {
+        let url = updateReleaseURL ?? AppIdentity.releasesURL
+        NSWorkspace.shared.open(url)
     }
 }
 

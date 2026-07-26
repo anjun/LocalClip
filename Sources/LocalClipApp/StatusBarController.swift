@@ -131,6 +131,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         prefs.isEnabled = true
         menu.addItem(prefs)
 
+        let updates = NSMenuItem(
+            title: "检查更新…",
+            action: #selector(checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        updates.target = self
+        updates.isEnabled = true
+        menu.addItem(updates)
+
         let openSettings = NSMenuItem(
             title: "打开辅助功能设置…",
             action: #selector(openAccessibilitySettings(_:)),
@@ -234,6 +243,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if !trusted, response == .alertFirstButtonReturn {
             openAccessibilitySettings(nil)
         }
+    }
+
+    @objc func checkForUpdates(_ sender: Any?) {
+        model.checkForUpdates()
+        // Open prefs so the user sees the result.
+        openAppSettings(nil)
     }
 
     /// Opens app preferences (login item, privacy). Dedicated window — more reliable

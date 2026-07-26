@@ -1,101 +1,92 @@
 # LocalClip
 
-**纯本地** macOS 菜单栏剪贴板历史：文本 + 图片，**零联网**。
+[English](README.en.md) · **中文**
 
-替代 iCopy 一类闭源工具时，你可以用源码自行审计——工程内不包含 `URLSession`、分析 SDK 或更新检查。
+**纯本地** macOS 菜单栏剪贴板历史：文本 + 图片。  
+源码可审计；默认不联网。仅在你点击「检查更新」时访问 GitHub Releases。
 
-## 功能（v1）
+[![CI](https://github.com/anjun/LocalClip/actions/workflows/ci.yml/badge.svg)](https://github.com/anjun/LocalClip/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/anjun/LocalClip)](https://github.com/anjun/LocalClip/releases)
+
+## 功能
 
 - 菜单栏常驻（`LSUIElement`，无 Dock 图标）
 - 记录文本与图片；同一次复制若图文并存 → **两条**（列表中图在上）
-- 按类型相邻去重（相同 hash 不重复记）
-- 保留：**最多 200 条** 且 **7 天**
-- 文本搜索（大小写不敏感）；搜索时不显示纯图片项
-- 点选：写入系统剪贴板 + **自动粘贴**（需辅助功能）；未授权时仅写剪贴板
-- 纯文本开关：仅影响文本；图片仍粘贴为图片
-- 全局快捷键 **⌥C** 切换历史面板
-- 面板内 **↑/↓** 选择、**Return** 粘贴（与点击同一路径）
-- 默认登录启动（签名/包结构不完整时可能注册失败，可忽略）
+- 按类型相邻去重；保留 **最多 200 条** 且 **7 天**
+- 文本搜索；点选 / **Return** 写入剪贴板并 **自动粘贴**（需辅助功能）
+- 纯文本开关（仅影响文本）
+- 全局快捷键 **⌥C** 切换面板；面板内 **↑/↓** 选择
+- 登录时启动（偏好设置中可关）
+- 偏好设置中 **检查更新**（GitHub Releases，手动触发）
 
-## 要求
+## 系统要求
 
 - macOS 13+
-- Swift 5.9+（Command Line Tools 或 Xcode）
-- 自动粘贴：系统设置 → 隐私与安全性 → **辅助功能** → 勾选 LocalClip
+- Apple 芯片或 Intel（发布包为 **arm64 + x86_64** 通用二进制）
 
-## 构建与运行
+## 安装
+
+### 下载安装包（推荐）
+
+1. 打开 [Releases](https://github.com/anjun/LocalClip/releases) 下载 `.dmg` 或 `.zip`
+2. 将 **LocalClip.app** 拖到「应用程序」
+3. **系统设置 → 隐私与安全性 → 辅助功能** → 勾选 LocalClip  
+4. 若改过权限：右键菜单栏图标 → **退出并重新打开**
+
+### 从源码构建
 
 ```bash
-cd /Users/alex/PycharmProjects/LocalClip
+git clone https://github.com/anjun/LocalClip.git
+cd LocalClip
 
-# 核心逻辑自测
-make test
-# 或: swift run LocalClipTestRunner
-
-# 发布：Intel (x86_64) + Apple 芯片 (arm64) 二合一通用包
-make release
-# 产物:
-#   dist/LocalClip.app
-#   dist/LocalClip-1.0.0-universal-macos.zip
-#   dist/LocalClip-1.0.0-universal-macos.dmg
-# 并安装到 ~/Applications/LocalClip.app
-
-# 仅本机架构快速打包（开发用）
-make package
-
-# 推荐从「应用程序」启动（权限更稳定）
+make test          # 单元测试
+make package       # 本机架构 .app → ~/Applications
+make release       # 通用 ZIP + DMG
 make open
-# 或: open ~/Applications/LocalClip.app
 ```
 
-通用二进制用 `lipo` 合并 arm64 与 x86_64，单包可在 Intel Mac 与 Apple 芯片 Mac 上运行（需 macOS 13+）。
-### 菜单栏操作
+## 使用
 
 | 操作 | 作用 |
 |------|------|
-| **左键** 图标 | 打开历史面板 |
-| **⌥C** | 全局切换历史面板 |
-| **右键** 图标 | 菜单：偏好设置 / 辅助功能 / **退出并重新打开** / **退出** |
-| 面板 **↑/↓** + **Return** | 选择并粘贴（与点击相同） |
-| 面板底部 **退出** | 退出应用 |
+| **左键** 菜单栏图标 | 打开历史面板 |
+| **⌥C** | 全局显示/隐藏面板 |
+| **↑ / ↓** + **Return** | 选择并粘贴 |
+| **右键** 图标 | 偏好设置 / 检查更新 / 辅助功能 / 退出 |
+| 点选历史项 | 写剪贴板 + 尝试自动粘贴 |
 
-### 辅助功能（自动粘贴）
+## 开发与发布
 
-1. 打开 **系统设置 → 隐私与安全性 → 辅助功能**，勾选 **LocalClip**  
-2. 若面板仍提示未信任：右键图标 → **退出并重新打开**  
-3. 重打包后若自动粘贴失效：在辅助功能列表中 **关掉再打开** LocalClip，然后退出并重新打开 App  
+```bash
+# 本地通用包
+make release
 
-未授权时仍可点选条目写入剪贴板，再手动 ⌘V。
-
-右键 **偏好设置…** 可开关登录启动等本应用设置。
-
-## 数据位置
-
-```
-~/Library/Application Support/LocalClip/
-  db.sqlite
-  images/
-  thumbs/
+# 打 tag 并推送 → GitHub Actions 自动构建并上传 Release 产物
+make public
+# 或指定版本：
+make public VERSION=1.0.1
 ```
 
-## 快捷键
+- **CI**：推送到 `main` / PR 时跑测试与编译（`.github/workflows/ci.yml`）
+- **Release**：推送 `v*` 标签时打通用包并创建 GitHub Release（`.github/workflows/release.yml`）
 
-| 快捷键 | 作用 |
-|--------|------|
-| **⌥C** | 全局显示/隐藏历史面板（Carbon 热键，固定 v1） |
-| **↑ / ↓** | 面板内移动选择（搜索框聚焦时交给输入） |
-| **Return** | 粘贴当前选中项 |
 ## 隐私
 
-- 无网络代码路径
-- 无 iCloud / 账号 / 分析
-- 历史仅存本机
+| 数据 | 说明 |
+|------|------|
+| 剪贴板历史 | 仅 `~/Library/Application Support/LocalClip/` |
+| 网络 | **默认无**；仅「检查更新」请求 `api.github.com` 最新 Release |
+| 分析 / 账号 / iCloud | 无 |
 
 ## 架构
 
 | 模块 | 说明 |
 |------|------|
-| `LocalClipCore` | 存储、去重、保留、粘贴策略、监听 |
-| `LocalClipApp` | SwiftUI 菜单栏 UI |
+| `LocalClipCore` | 存储、监听、粘贴策略、热键、更新检查 |
+| `LocalClipApp` | 菜单栏 UI / 偏好设置 |
+| `LocalClipTestRunner` | 无 XCTest 环境下的轻量测试 |
 
-设计文档：`docs/superpowers/specs/2026-07-26-localclip-design.md`
+## 许可证
+
+[MIT](LICENSE) © 2026 anjun

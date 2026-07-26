@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v1.0.0). Leave empty when triggered by tag push."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Universal package + GitHub Release
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          # strip leading v
+          VER="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Building release for tag=$TAG version=$VER"
+
+      - name: Sync Info.plist marketing version
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" Resources/Info.plist
+          # Build number = unix time for uniqueness
+          BUILD="$(date +%s)"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" Resources/Info.plist
+          plutil -p Resources/Info.plist
+
+      - name: Run tests
+        run: swift run -c release LocalClipTestRunner
+
+      - name: Build universal package
+        run: |
+          chmod +x Scripts/release.sh
+          # Skip local ~/Applications install noise in CI by env flag if supported;
+          # release.sh still writes dist/ artifacts.
+          SKIP_LOCAL_INSTALL=1 bash Scripts/release.sh
+
+      - name: Upload artifacts (workflow)
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalClip-${{ steps.ver.outputs.version }}-universal
+          path: |
+            dist/LocalClip-*-universal-macos.zip
+            dist/LocalClip-*-universal-macos.dmg
+            dist/LocalClip.app
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          VER="${{ steps.ver.outputs.version }}"
+          ZIP="$(ls dist/LocalClip-*-universal-macos.zip | head -1)"
+          DMG="$(ls dist/LocalClip-*-universal-macos.dmg | head -1)"
+          NOTES="$(mktemp)"
+          cat > "$NOTES" <<EOF
+          ## LocalClip ${VER}
+
+          Universal macOS build (**arm64 + x86_64**), macOS 13+.
+
+          ### Install
+          1. Download the \`.dmg\` or \`.zip\`
+          2. Open / drag **LocalClip.app** to Applications
+          3. System Settings → Privacy & Security → **Accessibility** → enable LocalClip
+          4. Global hotkey: **⌥C**
+
+          ### Checksums
+          EOF
+          shasum -a 256 "$ZIP" "$DMG" >> "$NOTES"
+
+          # Create or update release
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" "$DMG" --clobber
+          else
+            gh release create "$TAG" "$ZIP" "$DMG" \
+              --title "LocalClip ${VER}" \
+              --notes-file "$NOTES"
+          fi

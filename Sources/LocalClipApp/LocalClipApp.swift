@@ -558,6 +558,7 @@ struct SettingsView: View {
                     launchCard
                     permissionCard
                     retentionCard
+                    updatesCard
                     quitCard
                 }
                 .padding(28)
@@ -639,7 +640,7 @@ struct SettingsView: View {
                     Text("历史只存在本机")
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(LCTheme.textPrimary)
-                    Text("路径 Application Support/LocalClip。无网络、无分析、无同步。")
+                    Text("路径 Application Support/LocalClip。无分析、无同步。默认不联网；仅「检查更新」会访问 GitHub。")
                         .font(.system(size: 12, weight: .regular, design: .rounded))
                         .foregroundStyle(LCTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -757,6 +758,64 @@ struct SettingsView: View {
                 .padding(.top, 12)
                 .fixedSize(horizontal: false, vertical: true)
                 .lineSpacing(3)
+        }
+    }
+
+    private var updatesCard: some View {
+        settingsCard(eyebrow: "UPDATE", title: "更新") {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 14) {
+                    settingsGlyph(systemName: "arrow.down.circle", tint: LCTheme.ink)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("当前版本 \(AppIdentity.currentVersion())")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(LCTheme.textPrimary)
+                        Text("仅在你点击时访问 GitHub Releases，无后台静默上报")
+                            .font(.system(size: 12, weight: .regular, design: .rounded))
+                            .foregroundStyle(LCTheme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if let msg = model.updateCheckMessage {
+                    Text(msg)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(model.updateAvailable ? LCTheme.ink : LCTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        model.checkForUpdates()
+                    } label: {
+                        labelChip(
+                            model.isCheckingUpdate ? "检查中…" : "检查更新",
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.isCheckingUpdate)
+
+                    if model.updateAvailable {
+                        Button {
+                            model.openUpdatePage()
+                        } label: {
+                            labelChip("打开下载页", systemImage: "safari")
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Button {
+                        NSWorkspace.shared.open(AppIdentity.githubURL)
+                    } label: {
+                        labelChip("GitHub", systemImage: "link")
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer(minLength: 0)
+                }
+            }
         }
     }
 
