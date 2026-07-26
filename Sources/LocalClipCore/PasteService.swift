@@ -55,13 +55,12 @@ public final class PasteService: @unchecked Sendable {
         self.selfWriteGuard = selfWriteGuard
     }
 
-    /// - Parameter beforeKeystroke: Runs after pasteboard write and only when auto-paste is used.
+    /// Write pasteboard only (no keystroke). Used by async orchestration and tests.
     @discardableResult
-    public func paste(
+    public func writeToPasteboard(
         item: ClipboardItem,
         imageData: Data?,
-        plainTextMode: Bool,
-        beforeKeystroke: (() -> Void)? = nil
+        plainTextMode: Bool
     ) -> PasteResult {
         let trusted = accessibilityChecker()
         let attempt = attemptAutoPaste()
@@ -72,9 +71,6 @@ public final class PasteService: @unchecked Sendable {
             accessibilityTrusted: trusted,
             attemptAutoPaste: attempt
         )
-
-        let expected = AutoPasteOrchestration.steps(accessibilityTrusted: attempt || trusted)
-        precondition(!expected.isEmpty)
 
         switch action {
         case .nothing:
@@ -92,11 +88,26 @@ public final class PasteService: @unchecked Sendable {
             selfWriteGuard.noteChangeCountToIgnore(pasteboard.changeCount)
 
             if case .writeAndAutoPaste = action {
-                beforeKeystroke?()
-                keystroke()
                 return .wroteAndAutoPasted
             }
             return .wroteClipboardOnly
         }
+    }
+
+    /// - Parameter beforeKeystroke: Runs after pasteboard write and only when auto-paste is used.
+    ///   Callers must not block the main thread (no Thread.sleep).
+    @discardableResult
+    public func paste(
+        item: ClipboardItem,
+        imageData: Data?,
+        plainTextMode: Bool,
+        beforeKeystroke: (() -> Void)? = nil
+    ) -> PasteResult {
+        let result = writeToPasteboard(item: item, imageData: imageData, plainTextMode: plainTextMode)
+        if result == .wroteAndAutoPasted {
+            beforeKeystroke?()
+            keystroke()
+        }
+        return result
     }
 }

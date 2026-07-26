@@ -73,7 +73,7 @@ struct HistoryPanel: View {
             }
         }
         .frame(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(.light)
         .onAppear {
             model.refresh()
             model.refreshAccessibility()
@@ -85,18 +85,17 @@ struct HistoryPanel: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            // Brand mark
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [LCTheme.ink, LCTheme.ink.opacity(0.65)],
+                            colors: [LCTheme.ink, LCTheme.ink.opacity(0.75)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
                     )
                     .frame(width: 28, height: 28)
-                    .shadow(color: LCTheme.ink.opacity(0.35), radius: 8, y: 2)
+                    .shadow(color: LCTheme.ink.opacity(0.28), radius: 6, y: 2)
                 Image(systemName: "paperclip")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
@@ -144,7 +143,7 @@ struct HistoryPanel: View {
                 Circle()
                     .fill(LCTheme.success)
                     .frame(width: 6, height: 6)
-                    .shadow(color: LCTheme.success.opacity(0.6), radius: 3)
+                    .shadow(color: LCTheme.success.opacity(0.45), radius: 3)
                 Text("自动粘贴就绪")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(LCTheme.textSecondary)
@@ -152,7 +151,7 @@ struct HistoryPanel: View {
                 if model.isMonitoring {
                     Text("LIVE")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(LCTheme.success.opacity(0.9))
+                        .foregroundStyle(LCTheme.success)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(
@@ -186,10 +185,10 @@ struct HistoryPanel: View {
             .padding(12)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(LCTheme.warning.opacity(0.08))
+                    .fill(LCTheme.warning.opacity(0.10))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(LCTheme.warning.opacity(0.18), lineWidth: 1)
+                            .strokeBorder(LCTheme.warning.opacity(0.22), lineWidth: 1)
                     )
             )
             .padding(.horizontal, 16)
@@ -203,7 +202,6 @@ struct HistoryPanel: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .transition(.opacity)
         }
     }
 
@@ -216,24 +214,25 @@ struct HistoryPanel: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 6) {
-                    ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                    ForEach(model.items) { item in
                         HistoryRow(
                             item: item,
-                            index: index,
                             isHovered: hoveredID == item.id
                         )
+                        .contentShape(Rectangle())
                         .onHover { hovering in
-                            hoveredID = hovering ? item.id : (hoveredID == item.id ? nil : hoveredID)
+                            if hovering {
+                                hoveredID = item.id
+                            } else if hoveredID == item.id {
+                                hoveredID = nil
+                            }
                         }
                         .onTapGesture {
-                            AppDelegate.statusBar?.closePopover()
+                            // pasteItem closes popover itself — avoid double-close races
                             model.pasteItem(item)
                         }
                         .contextMenu {
-                            Button("粘贴") {
-                                AppDelegate.statusBar?.closePopover()
-                                model.pasteItem(item)
-                            }
+                            Button("粘贴") { model.pasteItem(item) }
                             Button("删除", role: .destructive) { model.deleteItem(item) }
                         }
                     }
@@ -305,7 +304,7 @@ struct HistoryPanel: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
         }
-        .background(LCTheme.slate.opacity(0.5))
+        .background(LCTheme.paper.opacity(0.92))
     }
 }
 
@@ -313,9 +312,14 @@ struct HistoryPanel: View {
 
 struct HistoryRow: View {
     let item: ClipboardItem
-    let index: Int
     var isHovered: Bool = false
     @EnvironmentObject var model: AppModel
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -334,14 +338,12 @@ struct HistoryRow: View {
                     .foregroundStyle(LCTheme.ink)
                     .padding(6)
                     .background(Circle().fill(LCTheme.inkSoft))
-                    .transition(.scale.combined(with: .opacity))
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(rowBackground)
         .overlay(alignment: .leading) {
-            // Signature: indigo ink rail
             if isHovered {
                 RoundedRectangle(cornerRadius: 2)
                     .fill(LCTheme.ink)
@@ -350,7 +352,7 @@ struct HistoryRow: View {
                     .padding(.leading, 3)
             }
         }
-        .animation(.easeOut(duration: 0.15), value: isHovered)
+        // No per-row animation — was a major scroll hitch with large lists.
     }
 
     @ViewBuilder
@@ -358,8 +360,8 @@ struct HistoryRow: View {
         switch item.kind {
         case .image:
             if let path = item.thumbPath ?? item.imagePath {
-                let url = model.store.rootURL.appendingPathComponent(path)
-                if let nsImage = NSImage(contentsOf: url) {
+                let url = model.store.absoluteURL(forRelativePath: path)
+                if let nsImage = ThumbImageCache.image(at: url) {
                     Image(nsImage: nsImage)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -408,7 +410,7 @@ struct HistoryRow: View {
                         .fill(LCTheme.inkSoft)
                 )
 
-            Text(relativeTime)
+            Text(Self.relativeFormatter.localizedString(for: item.createdAt, relativeTo: Date()))
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundStyle(LCTheme.textTertiary)
 
@@ -424,31 +426,20 @@ struct HistoryRow: View {
         item.kind == .image ? "IMG" : "TXT"
     }
 
-    private var relativeTime: String {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f.localizedString(for: item.createdAt, relativeTo: Date())
-    }
-
     private var rowBackground: some View {
         RoundedRectangle(cornerRadius: LCTheme.rowRadius, style: .continuous)
-            .fill(isHovered ? LCTheme.slateElevated : LCTheme.mist)
+            .fill(isHovered ? LCTheme.inkSoft : LCTheme.paperElevated)
             .overlay(
                 RoundedRectangle(cornerRadius: LCTheme.rowRadius, style: .continuous)
-                    .strokeBorder(isHovered ? LCTheme.ink.opacity(0.22) : LCTheme.hairline, lineWidth: 1)
+                    .strokeBorder(isHovered ? LCTheme.ink.opacity(0.28) : LCTheme.hairline, lineWidth: 1)
             )
+            .shadow(color: Color.black.opacity(isHovered ? 0.06 : 0.03), radius: isHovered ? 6 : 2, y: 1)
     }
 
     private func placeholder(icon: String) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [LCTheme.slateElevated, LCTheme.mist],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .fill(LCTheme.mist)
             Image(systemName: icon)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(LCTheme.textSecondary)

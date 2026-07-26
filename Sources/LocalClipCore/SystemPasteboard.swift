@@ -21,11 +21,31 @@ public final class SystemPasteboard: PasteboardWriting {
 
     public func writeImageData(_ data: Data) {
         board.clearContents()
+        // Prefer raw bytes — avoids decoding multi‑megapixel images into NSImage just to write.
+        if isPNG(data) {
+            board.setData(data, forType: .png)
+            return
+        }
+        if isTIFF(data) {
+            board.setData(data, forType: .tiff)
+            return
+        }
         if let image = NSImage(data: data) {
             board.writeObjects([image])
         } else {
             board.setData(data, forType: .png)
         }
+    }
+
+    private func isPNG(_ data: Data) -> Bool {
+        data.count >= 8 && data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    }
+
+    private func isTIFF(_ data: Data) -> Bool {
+        guard data.count >= 4 else { return false }
+        // II*\0 or MM\0*
+        return (data[0] == 0x49 && data[1] == 0x49 && data[2] == 0x2A && data[3] == 0x00)
+            || (data[0] == 0x4D && data[1] == 0x4D && data[2] == 0x00 && data[3] == 0x2A)
     }
 
     public func readCapture(sourceBundleId: String?) -> ClipboardCapture {

@@ -154,6 +154,33 @@ public final class ClipboardStore: @unchecked Sendable {
         return try Data(contentsOf: url)
     }
 
+    /// Absolute URL for a stored relative path (thumb or image).
+    public func absoluteURL(forRelativePath path: String) -> URL {
+        rootURL.appendingPathComponent(path)
+    }
+
+    /// Rebuild oversized “thumbs” that were written as full originals (pre-fix data).
+    public func repairBloatedThumbnails() {
+        lock.lock()
+        defer { lock.unlock() }
+        let items: [ClipboardItem]
+        do {
+            items = try fetchLocked(query: nil)
+        } catch {
+            return
+        }
+        for item in items where item.kind == .image {
+            guard let thumbRel = item.thumbPath, let imageRel = item.imagePath else { continue }
+            let thumbURL = rootURL.appendingPathComponent(thumbRel)
+            let imageURL = rootURL.appendingPathComponent(imageRel)
+            let thumbSize = (try? FileManager.default.attributesOfItem(atPath: thumbURL.path)[.size] as? NSNumber)?.intValue ?? 0
+            guard thumbSize > ThumbnailMaker.maxThumbFileBytes else { continue }
+            guard let full = try? Data(contentsOf: imageURL) else { continue }
+            let fixed = ThumbnailMaker.preferredThumbData(from: full)
+            try? fixed.write(to: thumbURL, options: .atomic)
+        }
+    }
+
     public func delete(id: String) throws {
         lock.lock()
         defer { lock.unlock() }
@@ -218,8 +245,8 @@ public final class ClipboardStore: @unchecked Sendable {
         // Store raw bytes as .png path (may be PNG or other; display uses NSImage)
         try data.write(to: imageURL, options: .atomic)
 
-        // Best-effort thumb: write same data if small; tests don't require real decode
-        let thumbData = data
+        // Real downscaled thumb — full-resolution dumps make the list unusably slow.
+        let thumbData = ThumbnailMaker.preferredThumbData(from: data)
         try thumbData.write(to: thumbURL, options: .atomic)
 
         let item = ClipboardItem(

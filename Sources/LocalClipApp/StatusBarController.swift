@@ -35,13 +35,10 @@ final class StatusBarController: NSObject {
                 .environmentObject(model)
                 .frame(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
         )
-        // Dark vibrant material under SwiftUI content
+        // Light material under SwiftUI paper panel
         if #available(macOS 10.14, *) {
-            let visual = NSVisualEffectView()
-            visual.material = .hudWindow
-            visual.blendingMode = .behindWindow
-            visual.state = .active
             host.view.wantsLayer = true
+            host.view.layer?.backgroundColor = NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.985, alpha: 1).cgColor
         }
         pop.contentViewController = host
         popover = pop

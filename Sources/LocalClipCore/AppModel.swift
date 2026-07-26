@@ -82,6 +82,8 @@ public final class AppModel: ObservableObject {
         monitor = mon
         isMonitoring = true
         frontmostTracker.observeFrontmost()
+        // Fix legacy full-size “thumbs” that lag the list to death.
+        store.repairBloatedThumbnails()
 
         if settings.launchAtLogin {
             registerLoginItem(enabled: true)
@@ -119,41 +121,65 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Paste history item. Fully async — never blocks main with sleep or large-image decode races.
     public func pasteItem(_ item: ClipboardItem) {
-        do {
-            frontmostTracker.observeFrontmost()
-            let target = frontmostTracker.previousExternalApp
-            let imageData = try store.loadImageData(for: item)
+        frontmostTracker.observeFrontmost()
+        let target = frontmostTracker.previousExternalApp
+        let plain = plainTextPaste
+        // Close UI immediately (not inside a blocking paste path).
+        AppDelegateClosePopover.shared?()
+        HostUIDismisser.dismissLocalClipWindows()
 
-            let result = pasteService.paste(
-                item: item,
-                imageData: imageData,
-                plainTextMode: plainTextPaste,
-                beforeKeystroke: {
-                    HostUIDismisser.dismissLocalClipWindows()
-                    AppDelegateClosePopover.shared?()
-                    target?.activate(options: [.activateIgnoringOtherApps])
-                    Thread.sleep(forTimeInterval: 0.12)
-                }
-            )
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performPaste(item: item, target: target, plainTextMode: plain)
+        }
+    }
 
-            switch result {
-            case .wroteAndAutoPasted:
-                if accessibilityTrusted {
-                    statusMessage = nil
-                } else {
-                    // Still tried keystroke; guide if it didn't land.
-                    statusMessage = "已粘贴（若未出现请手动 ⌘V）"
-                }
-            case .wroteClipboardOnly:
-                statusMessage = "已复制到剪贴板，请 ⌘V"
-            case .failed:
-                statusMessage = "粘贴失败"
-            case .nothing:
-                statusMessage = "无内容可粘贴"
+    private func performPaste(
+        item: ClipboardItem,
+        target: NSRunningApplication?,
+        plainTextMode: Bool
+    ) async {
+        // Load image off main actor so 5K PNGs don't freeze / kill the UI thread.
+        let imageData: Data?
+        if item.kind == .image {
+            let store = self.store
+            do {
+                imageData = try await Task.detached(priority: .userInitiated) {
+                    try store.loadImageData(for: item)
+                }.value
+            } catch {
+                statusMessage = "粘贴失败: \(error)"
+                return
             }
-        } catch {
-            statusMessage = "粘贴失败: \(error)"
+        } else {
+            imageData = nil
+        }
+
+        let result = pasteService.writeToPasteboard(
+            item: item,
+            imageData: imageData,
+            plainTextMode: plainTextMode
+        )
+
+        switch result {
+        case .wroteAndAutoPasted:
+            target?.activate(options: [.activateIgnoringOtherApps])
+            // Non-blocking delay so target becomes key before ⌘V.
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            AccessibilityPaste.postCommandV(toPid: target?.processIdentifier)
+            if accessibilityTrusted {
+                statusMessage = nil
+            } else {
+                statusMessage = "已粘贴（若未出现请手动 ⌘V）"
+            }
+        case .wroteClipboardOnly:
+            statusMessage = "已复制到剪贴板，请 ⌘V"
+        case .failed:
+            statusMessage = "粘贴失败"
+        case .nothing:
+            statusMessage = "无内容可粘贴"
         }
     }
 

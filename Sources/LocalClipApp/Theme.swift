@@ -1,21 +1,26 @@
 import SwiftUI
 
-/// LocalClip visual system — “ink on frosted slate”
-/// Signature: monospaced meta + indigo ink rail on soft glass cards.
+/// LocalClip visual system — “ink on pale paper”
+/// Signature: monospaced meta + indigo ink rail on soft white cards.
+/// User preference: brighter than the previous frosted-slate dark panel.
 enum LCTheme {
-    // Palette
-    static let ink = Color(red: 0.35, green: 0.42, blue: 0.95)          // indigo ink
-    static let inkSoft = Color(red: 0.45, green: 0.52, blue: 0.98).opacity(0.18)
-    static let slate = Color(red: 0.11, green: 0.12, blue: 0.15)         // deep slate
-    static let slateElevated = Color(red: 0.16, green: 0.17, blue: 0.21)
-    static let mist = Color.white.opacity(0.06)
-    static let hairline = Color.white.opacity(0.08)
-    static let textPrimary = Color.white.opacity(0.92)
-    static let textSecondary = Color.white.opacity(0.48)
-    static let textTertiary = Color.white.opacity(0.32)
-    static let success = Color(red: 0.35, green: 0.82, blue: 0.62)
-    static let danger = Color(red: 0.95, green: 0.40, blue: 0.42)
-    static let warning = Color(red: 0.95, green: 0.72, blue: 0.35)
+    // Palette — cool paper + indigo ink
+    static let ink = Color(red: 0.28, green: 0.36, blue: 0.92)          // indigo ink
+    static let inkSoft = Color(red: 0.35, green: 0.42, blue: 0.95).opacity(0.12)
+    static let paper = Color(red: 0.96, green: 0.97, blue: 0.985)        // pale paper
+    static let paperElevated = Color.white
+    static let mist = Color(red: 0.90, green: 0.92, blue: 0.96).opacity(0.85)
+    static let hairline = Color.black.opacity(0.07)
+    static let textPrimary = Color(red: 0.12, green: 0.14, blue: 0.18)
+    static let textSecondary = Color(red: 0.38, green: 0.42, blue: 0.50)
+    static let textTertiary = Color(red: 0.55, green: 0.58, blue: 0.64)
+    static let success = Color(red: 0.12, green: 0.62, blue: 0.45)
+    static let danger = Color(red: 0.86, green: 0.28, blue: 0.30)
+    static let warning = Color(red: 0.82, green: 0.55, blue: 0.12)
+
+    // Compatibility aliases used by older call sites
+    static let slate = paper
+    static let slateElevated = paperElevated
 
     static let panelWidth: CGFloat = 380
     static let panelHeight: CGFloat = 540
@@ -24,23 +29,46 @@ enum LCTheme {
 
     static var panelBackground: some View {
         ZStack {
-            slate
+            paper
             LinearGradient(
                 colors: [
-                    Color(red: 0.18, green: 0.20, blue: 0.32).opacity(0.55),
+                    Color(red: 0.88, green: 0.91, blue: 1.0).opacity(0.55),
                     Color.clear
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-            // soft vignette
             RadialGradient(
-                colors: [ink.opacity(0.12), .clear],
+                colors: [ink.opacity(0.08), .clear],
                 center: .topTrailing,
                 startRadius: 20,
                 endRadius: 280
             )
         }
+    }
+}
+
+/// In-memory thumbnail cache — list must never re-decode disk images every frame.
+@MainActor
+enum ThumbImageCache {
+    private static let cache: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.countLimit = 80
+        c.totalCostLimit = 12 * 1024 * 1024
+        return c
+    }()
+
+    static func image(at url: URL) -> NSImage? {
+        let key = url.path as NSString
+        if let hit = cache.object(forKey: key) { return hit }
+        guard let img = NSImage(contentsOf: url) else { return nil }
+        let cost = max(1, Int(img.size.width * img.size.height * 4))
+        cache.setObject(img, forKey: key, cost: cost)
+        return img
+    }
+
+    static func clear() {
+        cache.removeAllObjects()
     }
 }
 
@@ -59,11 +87,12 @@ struct LCSearchFieldStyle: TextFieldStyle {
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(LCTheme.mist)
+                .fill(LCTheme.paperElevated)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(LCTheme.hairline, lineWidth: 1)
                 )
+                .shadow(color: Color.black.opacity(0.03), radius: 2, y: 1)
         )
     }
 }

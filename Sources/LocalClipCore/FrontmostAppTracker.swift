@@ -64,13 +64,13 @@ public enum AutoPasteOrchestration {
 }
 
 public enum HostUIDismisser {
-    /// Hide LocalClip windows so they are not the key target for ⌘V.
+    /// Soft-dismiss LocalClip UI so ⌘V targets the previous app.
+    /// Avoid `NSApp.hide` — on accessory/menu-bar apps it can look like a crash and
+    /// races badly with NSPopover teardown.
     public static func dismissLocalClipWindows() {
-        for window in NSApp.windows {
+        for window in NSApp.windows where window.isVisible {
             window.orderOut(nil)
         }
-        NSApp.hide(nil)
-        NSApp.deactivate()
     }
 }
 

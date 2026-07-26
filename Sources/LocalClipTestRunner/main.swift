@@ -131,6 +131,26 @@ struct LocalClipTestRunner {
             expect(!FileManager.default.fileExists(atPath: thumbURL.path), "thumb deleted")
             expect(try store.allItems().isEmpty, "row deleted")
         }
+
+        // Thumbnails must not be full-size dumps (root cause of list jank).
+        withStore { store, _, root in
+            // Synthetic "large" payload: repeat tiny PNG header+data to exceed maxThumbFileBytes
+            // Real path uses NSImage decode; for non-decodable bulk we still cap thumb size.
+            var big = Data()
+            // Build a valid larger PNG by tiling via NSImage-less path: ThumbnailMaker falls back.
+            // Use repeated tinyPNG — may not decode as multi-pixel, but preferredThumbData caps size.
+            let unit = tinyPNG()
+            while big.count < ThumbnailMaker.maxThumbFileBytes + 50_000 {
+                big.append(unit)
+            }
+            // If decode fails, preferredThumbData returns ≤1024; if it succeeds, JPEG is small.
+            let item = try store.insertImage(data: big)!
+            let thumbURL = root.appendingPathComponent(item.thumbPath!)
+            let attrs = try FileManager.default.attributesOfItem(atPath: thumbURL.path)
+            let thumbBytes = (attrs[.size] as? NSNumber)?.intValue ?? 0
+            expect(thumbBytes <= ThumbnailMaker.maxThumbFileBytes, "thumb not bloated (\(thumbBytes) bytes)")
+            expect(thumbBytes > 0, "thumb non-empty")
+        }
     }
 
     static func runPasteTests() {
