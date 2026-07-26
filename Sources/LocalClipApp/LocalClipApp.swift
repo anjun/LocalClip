@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        GlobalHotKey.shared.unregister()
         AppDelegate.sharedModel?.stop()
     }
 }
@@ -284,6 +285,9 @@ struct HistoryPanel: View {
                 Text("复制文字或截图后，会出现在这里")
                     .font(.system(size: 12, weight: .regular, design: .rounded))
                     .foregroundStyle(LCTheme.textTertiary)
+                Text("\(GlobalHotKey.displayLabel) 可随时唤出面板")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(LCTheme.ink.opacity(0.85))
             }
             Spacer()
         }
@@ -303,6 +307,17 @@ struct HistoryPanel: View {
                     .buttonStyle(LCGhostButtonStyle(destructive: true))
 
                 Spacer()
+
+                Text(GlobalHotKey.displayLabel)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(LCTheme.ink)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(LCTheme.inkSoft)
+                    )
+                    .help("全局快捷键：切换历史面板")
 
                 HStack(spacing: 6) {
                     Text("\(model.items.count)")

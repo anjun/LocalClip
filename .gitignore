@@ -4,3 +4,6 @@ dist/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
+
+# Design notes / specs (local only)
+docs/

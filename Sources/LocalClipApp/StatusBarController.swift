@@ -3,6 +3,7 @@ import SwiftUI
 import LocalClipCore
 
 /// AppKit status item: left-click opens panel, right-click shows menu (Quit, etc.).
+/// Global hotkey ⌥C toggles the same popover.
 @MainActor
 final class StatusBarController: NSObject {
     private var statusItem: NSStatusItem?
@@ -20,7 +21,7 @@ final class StatusBarController: NSObject {
         if let button = item.button {
             button.image = Self.makeStatusBarImage()
             button.image?.isTemplate = true
-            button.toolTip = "LocalClip"
+            button.toolTip = "LocalClip · \(GlobalHotKey.displayLabel)"
             button.target = self
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -57,6 +58,19 @@ final class StatusBarController: NSObject {
         AppDelegateClosePopover.shared = { [weak self] in
             self?.closePopover()
         }
+
+        installGlobalHotKey()
+    }
+
+    private func installGlobalHotKey() {
+        GlobalHotKey.shared.onPressed = { [weak self] in
+            Task { @MainActor in
+                self?.togglePopover()
+            }
+        }
+        if !GlobalHotKey.shared.registerOptionC() {
+            model.statusMessage = "快捷键 \(GlobalHotKey.displayLabel) 注册失败：请检查辅助功能权限后重启"
+        }
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
@@ -73,6 +87,15 @@ final class StatusBarController: NSObject {
 
     private func showContextMenu() {
         let menu = NSMenu()
+
+        let hotkeyItem = NSMenuItem(
+            title: "快捷键 \(GlobalHotKey.displayLabel) 切换面板",
+            action: nil,
+            keyEquivalent: ""
+        )
+        hotkeyItem.isEnabled = false
+        menu.addItem(hotkeyItem)
+        menu.addItem(.separator())
 
         let trustTitle = model.accessibilityTrusted
             ? "辅助功能：已信任 ✓"
@@ -116,7 +139,8 @@ final class StatusBarController: NSObject {
         }
     }
 
-    private func togglePopover() {
+    /// Shared by menu-bar click and global hotkey ⌥C.
+    func togglePopover() {
         guard let button = statusItem?.button, let popover else { return }
         model.refreshAccessibility()
         model.refresh()
@@ -157,6 +181,7 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func quit() {
+        GlobalHotKey.shared.unregister()
         model.stop()
         NSApp.terminate(nil)
     }
