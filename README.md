@@ -26,18 +26,27 @@
 ```bash
 cd /Users/alex/PycharmProjects/LocalClip
 
-# 核心逻辑自测（Command Line Tools 无 XCTest 时使用内置 runner）
-swift run LocalClipTestRunner
+# 核心逻辑自测
+make test
+# 或: swift run LocalClipTestRunner
 
-# 打包 .app（同时安装到 ~/Applications/LocalClip.app，便于辅助功能识别）
-./Scripts/package-app.sh
+# 发布：Intel (x86_64) + Apple 芯片 (arm64) 二合一通用包
+make release
+# 产物:
+#   dist/LocalClip.app
+#   dist/LocalClip-1.0.0-universal-macos.zip
+#   dist/LocalClip-1.0.0-universal-macos.dmg
+# 并安装到 ~/Applications/LocalClip.app
+
+# 仅本机架构快速打包（开发用）
+make package
 
 # 推荐从「应用程序」启动（权限更稳定）
-open ~/Applications/LocalClip.app
-# 或
-open dist/LocalClip.app
+make open
+# 或: open ~/Applications/LocalClip.app
 ```
 
+通用二进制用 `lipo` 合并 arm64 与 x86_64，单包可在 Intel Mac 与 Apple 芯片 Mac 上运行（需 macOS 13+）。
 ### 菜单栏操作
 
 | 操作 | 作用 |
