@@ -52,8 +52,15 @@ public final class PasteService: @unchecked Sendable {
         self.selfWriteGuard = selfWriteGuard
     }
 
+    /// - Parameter beforeKeystroke: Runs after pasteboard write and only when auto-paste is used.
+    ///   Use to dismiss LocalClip UI and activate the previous app before ⌘V.
     @discardableResult
-    public func paste(item: ClipboardItem, imageData: Data?, plainTextMode: Bool) -> PasteResult {
+    public func paste(
+        item: ClipboardItem,
+        imageData: Data?,
+        plainTextMode: Bool,
+        beforeKeystroke: (() -> Void)? = nil
+    ) -> PasteResult {
         let trusted = accessibilityChecker()
         let action = PastePolicy.resolve(
             item: item,
@@ -62,11 +69,14 @@ public final class PasteService: @unchecked Sendable {
             accessibilityTrusted: trusted
         )
 
+        // Documented orchestration must match AutoPasteOrchestration.
+        let expected = AutoPasteOrchestration.steps(accessibilityTrusted: trusted)
+        precondition(!expected.isEmpty)
+
         switch action {
         case .nothing:
             return .nothing
         case .writeAndAutoPaste(let payload), .writeClipboardOnly(let payload):
-            // Arm guard before write so monitor skips our change
             let nextCount = pasteboard.changeCount + 1
             selfWriteGuard.beginSelfWrite(expectedChangeCountAfter: nextCount, duration: 1.5)
 
@@ -76,11 +86,11 @@ public final class PasteService: @unchecked Sendable {
             case .image(let data):
                 pasteboard.writeImageData(data)
             }
-
-            // Also ignore actual changeCount after write (may differ on real pasteboard)
             selfWriteGuard.noteChangeCountToIgnore(pasteboard.changeCount)
 
             if case .writeAndAutoPaste = action {
+                // dismiss + activate previous (caller-supplied), then keystroke
+                beforeKeystroke?()
                 keystroke()
                 return .wroteAndAutoPasted
             }

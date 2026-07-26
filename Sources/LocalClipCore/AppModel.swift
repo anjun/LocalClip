@@ -20,7 +20,9 @@ public final class AppModel: ObservableObject {
 
     public let store: ClipboardStore
     public let selfWriteGuard = SelfWriteGuard()
+    public let frontmostTracker = FrontmostAppTracker()
     public private(set) var settings: AppSettings
+    public private(set) var isMonitoring: Bool = false
     private var monitor: ClipboardMonitor?
     private var pasteService: PasteService!
     private let systemPasteboard = SystemPasteboard()
@@ -47,20 +49,24 @@ public final class AppModel: ObservableObject {
             accessibilityChecker: { AccessibilityPaste.isTrusted(prompt: false) },
             pasteboard: systemPasteboard,
             keystroke: {
-                // Small delay so pasteboard settles
-                Thread.sleep(forTimeInterval: 0.04)
                 AccessibilityPaste.postCommandV()
             },
             selfWriteGuard: guard_
         )
     }
 
+    /// Start clipboard monitoring. Safe to call multiple times; starts at app launch.
     public func start() {
+        if isMonitoring, monitor?.isRunning == true {
+            refreshAccessibility()
+            return
+        }
         refreshAccessibility()
         let mon = ClipboardMonitor(
             store: store,
             pasteboard: systemPasteboard,
             selfWriteGuard: selfWriteGuard,
+            frontmostTracker: frontmostTracker,
             pollInterval: settings.pollInterval
         )
         mon.onItemsChanged = { [weak self] in
@@ -70,6 +76,8 @@ public final class AppModel: ObservableObject {
         }
         mon.start()
         monitor = mon
+        isMonitoring = true
+        frontmostTracker.observeFrontmost()
 
         if settings.launchAtLogin {
             registerLoginItem(enabled: true)
@@ -78,6 +86,7 @@ public final class AppModel: ObservableObject {
 
     public func stop() {
         monitor?.stop()
+        isMonitoring = false
     }
 
     public func refresh() {
@@ -107,12 +116,27 @@ public final class AppModel: ObservableObject {
 
     public func pasteItem(_ item: ClipboardItem) {
         do {
+            // Snapshot target before we become / stay key.
+            frontmostTracker.observeFrontmost()
+            let target = frontmostTracker.previousExternalApp
             let imageData = try store.loadImageData(for: item)
+            let trusted = AccessibilityPaste.isTrusted(prompt: false)
+
             let result = pasteService.paste(
                 item: item,
                 imageData: imageData,
-                plainTextMode: plainTextPaste
+                plainTextMode: plainTextPaste,
+                beforeKeystroke: {
+                    // Follow AutoPasteOrchestration: dismiss host UI, activate previous, delay.
+                    HostUIDismisser.dismissLocalClipWindows()
+                    target?.activate(options: [.activateIgnoringOtherApps])
+                    Thread.sleep(forTimeInterval: 0.08)
+                }
             )
+
+            // If untrusted we still wrote clipboard; no keystroke path.
+            _ = trusted
+
             switch result {
             case .wroteAndAutoPasted:
                 statusMessage = nil
@@ -157,7 +181,6 @@ public final class AppModel: ObservableObject {
                     try SMAppService.mainApp.unregister()
                 }
             } catch {
-                // Login item registration may fail without proper signing/bundle; non-fatal.
                 NSLog("LocalClip login item: \(error)")
             }
         }

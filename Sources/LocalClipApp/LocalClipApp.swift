@@ -2,12 +2,26 @@ import SwiftUI
 import LocalClipCore
 import AppKit
 
+/// Starts clipboard monitoring at process launch (not when the panel first opens).
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    static var sharedModel: AppModel?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        AppDelegate.sharedModel?.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppDelegate.sharedModel?.stop()
+    }
+}
+
 @main
 struct LocalClipApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model: AppModel
 
     init() {
-        // LSUIElement-style: hide dock icon when launched as packaged app
         NSApplication.shared.setActivationPolicy(.accessory)
         let created: AppModel
         do {
@@ -16,6 +30,10 @@ struct LocalClipApp: App {
             fatalError("LocalClip failed to open store: \(error)")
         }
         _model = StateObject(wrappedValue: created)
+        AppDelegate.sharedModel = created
+        // If delegate already finished launching (rare), start immediately.
+        // Normal path: applicationDidFinishLaunching → start().
+        created.start()
     }
 
     var body: some Scene {
@@ -24,8 +42,9 @@ struct LocalClipApp: App {
                 .environmentObject(model)
                 .frame(width: 360, height: 480)
                 .onAppear {
-                    model.start()
+                    // Monitor already running from launch; only refresh UI.
                     model.refresh()
+                    model.frontmostTracker.observeFrontmost()
                 }
         } label: {
             Label("LocalClip", systemImage: "doc.on.clipboard")
@@ -42,7 +61,6 @@ struct LocalClipApp: App {
 
 struct HistoryPanel: View {
     @EnvironmentObject var model: AppModel
-    @State private var showSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -127,6 +145,11 @@ struct HistoryPanel: View {
                 Text("\(model.items.count) 条 · 本地 · 零联网")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                if model.isMonitoring {
+                    Text("监听中")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
                 Button("刷新") { model.refresh() }
             }
             .padding(8)

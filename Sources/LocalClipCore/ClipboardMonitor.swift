@@ -11,21 +11,25 @@ public final class ClipboardMonitor: ClipboardMonitoring, @unchecked Sendable {
     private let store: ClipboardStore
     private let pasteboard: SystemPasteboard
     private let selfWriteGuard: SelfWriteGuard
+    private let frontmostTracker: FrontmostAppTracker
     private let pollInterval: TimeInterval
     private var timer: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "com.localclip.monitor", qos: .utility)
     private var lastChangeCount: Int = -1
     public var onItemsChanged: (() -> Void)?
+    public private(set) var isRunning: Bool = false
 
     public init(
         store: ClipboardStore,
         pasteboard: SystemPasteboard = SystemPasteboard(),
         selfWriteGuard: SelfWriteGuard,
+        frontmostTracker: FrontmostAppTracker = FrontmostAppTracker(),
         pollInterval: TimeInterval = 0.4
     ) {
         self.store = store
         self.pasteboard = pasteboard
         self.selfWriteGuard = selfWriteGuard
+        self.frontmostTracker = frontmostTracker
         self.pollInterval = pollInterval
     }
 
@@ -33,20 +37,26 @@ public final class ClipboardMonitor: ClipboardMonitoring, @unchecked Sendable {
         stop()
         lastChangeCount = pasteboard.changeCount
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + pollInterval, repeating: pollInterval)
+        // Fire soon so we track frontmost even before first pasteboard change.
+        timer.schedule(deadline: .now() + 0.05, repeating: pollInterval)
         timer.setEventHandler { [weak self] in
             self?.tick()
         }
         timer.resume()
         self.timer = timer
+        isRunning = true
     }
 
     public func stop() {
         timer?.cancel()
         timer = nil
+        isRunning = false
     }
 
     private func tick() {
+        // Always track external frontmost app for paste targeting.
+        frontmostTracker.observeFrontmost()
+
         let count = pasteboard.changeCount
         guard count != lastChangeCount else { return }
         lastChangeCount = count
@@ -67,7 +77,6 @@ public final class ClipboardMonitor: ClipboardMonitoring, @unchecked Sendable {
                 }
             }
         } catch {
-            // Swallow store errors on hot path; keep monitoring.
             NSLog("LocalClip monitor ingest error: \(error)")
         }
     }

@@ -151,6 +151,18 @@ struct LocalClipTestRunner {
         expect(a3 == .writeClipboardOnly(.text("hi")), "degraded clipboard only")
         expect(!PastePolicy.requiresAccessibilityKeystroke(a3), "degraded no keystroke flag")
 
+        let trustedSteps = AutoPasteOrchestration.steps(accessibilityTrusted: true)
+        expect(
+            trustedSteps == [
+                .writePasteboard, .dismissHostUI, .activatePreviousApp, .delay, .keystroke
+            ],
+            "trusted auto-paste leaves host before keystroke"
+        )
+        expect(
+            AutoPasteOrchestration.steps(accessibilityTrusted: false) == [.writePasteboard],
+            "untrusted only writes pasteboard"
+        )
+
         let board = MockPasteboard()
         let service = PasteService(
             accessibilityChecker: { false },
@@ -158,23 +170,29 @@ struct LocalClipTestRunner {
             keystroke: { failures += 1; print("FAIL unexpected keystroke") },
             selfWriteGuard: SelfWriteGuard()
         )
-        let r = service.paste(item: textItem, imageData: nil, plainTextMode: false)
+        var beforeUntrusted = false
+        let r = service.paste(item: textItem, imageData: nil, plainTextMode: false) {
+            beforeUntrusted = true
+        }
         expect(r == .wroteClipboardOnly, "service degraded result")
         expect(board.lastText == "hi", "service wrote text")
+        expect(!beforeUntrusted, "beforeKeystroke not used when untrusted")
 
         let board2 = MockPasteboard()
-        var keystroked = false
+        var events: [String] = []
         let service2 = PasteService(
             accessibilityChecker: { true },
             pasteboard: board2,
-            keystroke: { keystroked = true },
+            keystroke: { events.append("keystroke") },
             selfWriteGuard: SelfWriteGuard()
         )
         let data = Data([1, 2, 3, 4])
-        let r2 = service2.paste(item: imgItem, imageData: data, plainTextMode: true)
+        let r2 = service2.paste(item: imgItem, imageData: data, plainTextMode: true) {
+            events.append("beforeKeystroke")
+        }
         expect(r2 == .wroteAndAutoPasted, "trusted auto paste")
         expect(board2.lastImage == data, "image written")
-        expect(keystroked, "keystroke fired when trusted")
+        expect(events == ["beforeKeystroke", "keystroke"], "dismiss/activate before keystroke")
 
         let board3 = MockPasteboard()
         board3.changeCount = 10
