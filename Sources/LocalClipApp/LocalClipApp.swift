@@ -140,48 +140,18 @@ struct HistoryPanel: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
-            // Brand mark: prefer app icon, fall back to ink tile + paperclip
-            Group {
-                if let icon = NSApp.applicationIconImage {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 28, height: 28)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .shadow(color: LCTheme.ink.opacity(0.22), radius: 5, y: 2)
-                } else {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [LCTheme.ink, LCTheme.ink.opacity(0.75)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 28, height: 28)
-                            .shadow(color: LCTheme.ink.opacity(0.28), radius: 6, y: 2)
-                        Image(systemName: "paperclip")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
-                            .rotationEffect(.degrees(-25))
-                    }
-                }
+        HStack(alignment: .center, spacing: 12) {
+            if let icon = NSApp.applicationIconImage {
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 26, height: 26)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("LocalClip")
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(LCTheme.textPrimary)
-                    .tracking(0.3)
-                Text("本地 · 零联网")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(LCTheme.textTertiary)
-            }
-
+            Text("LocalClip")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(LCTheme.textPrimary)
             Spacer()
-
             Toggle(isOn: $model.plainTextPaste) {
                 Text("纯文本")
             }
@@ -211,51 +181,34 @@ struct HistoryPanel: View {
                 Circle()
                     .fill(LCTheme.success)
                     .frame(width: 6, height: 6)
-                    .shadow(color: LCTheme.success.opacity(0.45), radius: 3)
-                Text(AccessibilityPaste.trustStatusLabel().replacingOccurrences(of: "辅助功能：", with: "") + " · 自动粘贴")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                Text("自动粘贴就绪")
+                    .font(.system(size: 12, weight: .regular))
                     .foregroundStyle(LCTheme.textSecondary)
                 Spacer()
-                if model.isMonitoring {
-                    Text("LIVE")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(LCTheme.success)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule().fill(LCTheme.success.opacity(0.12))
-                        )
-                }
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 16)
             .padding(.bottom, 8)
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(LCTheme.warning)
-                    Text("将尝试自动粘贴；若未贴上请 ⌘V")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(LCTheme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                HStack(spacing: 6) {
-                    Button("系统设置") {
-                        AccessibilityPaste.openSystemSettings()
-                    }
+                Text("未授权辅助功能时将尝试粘贴；失败请手动 ⌘V")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(LCTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("系统设置") { AccessibilityPaste.openSystemSettings() }
                     Button("重检") { model.refreshAccessibility() }
-                    Button("重启 App") { AccessibilityPaste.relaunchCurrentApp() }
+                    Button("重启") { AccessibilityPaste.relaunchCurrentApp() }
                 }
                 .buttonStyle(LCGhostButtonStyle())
             }
             .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(LCTheme.warning.opacity(0.10))
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(LCTheme.fill)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(LCTheme.warning.opacity(0.22), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(LCTheme.border, lineWidth: 1)
                     )
             )
             .padding(.horizontal, 16)
@@ -264,9 +217,9 @@ struct HistoryPanel: View {
 
         if let msg = model.statusMessage {
             Text(msg)
-                .font(.system(size: 11, weight: .regular, design: .rounded))
-                .foregroundStyle(LCTheme.ink)
-                .padding(.horizontal, 18)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(LCTheme.textSecondary)
+                .padding(.horizontal, 16)
                 .padding(.bottom, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -280,7 +233,7 @@ struct HistoryPanel: View {
             emptyState
         } else {
             ScrollView {
-                LazyVStack(spacing: 6) {
+                LazyVStack(spacing: 0) {
                     ForEach(model.items) { item in
                         HistoryRow(
                             item: item,
@@ -297,17 +250,16 @@ struct HistoryPanel: View {
                         }
                         .onTapGesture {
                             model.selectedItemID = item.id
-                            // Same paste entry as Return — never a parallel path.
                             model.pasteItem(item)
                         }
                         .contextMenu {
                             Button("粘贴") { model.pasteItem(item) }
                             Button("删除", role: .destructive) { model.deleteItem(item) }
                         }
+                        Divider().overlay(LCTheme.border).padding(.leading, 60)
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
+                .padding(.horizontal, 8)
             }
         }
     }
@@ -408,35 +360,18 @@ struct HistoryRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             mediaThumb
-
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 4) {
                 primaryLabel
                 metaLine
             }
-
             Spacer(minLength: 0)
-
-            if isHovered || isSelected {
-                Image(systemName: "return")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(LCTheme.ink)
-                    .padding(6)
-                    .background(Circle().fill(LCTheme.inkSoft))
-            }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .padding(.vertical, 10)
-        .background(rowBackground)
-        .overlay(alignment: .leading) {
-            if isHovered || isSelected {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(LCTheme.ink)
-                    .frame(width: 3)
-                    .padding(.vertical, 10)
-                    .padding(.leading, 3)
-            }
-        }
-        // No per-row animation — was a major scroll hitch with large lists.
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isHovered || isSelected ? LCTheme.fill : Color.clear)
+        )
     }
 
     @ViewBuilder
@@ -484,111 +419,149 @@ struct HistoryRow: View {
 
     private var metaLine: some View {
         HStack(spacing: 8) {
-            Text(kindTag)
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .foregroundStyle(LCTheme.ink)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(LCTheme.inkSoft)
-                )
-
-            Text(Self.relativeFormatter.localizedString(for: item.createdAt, relativeTo: Date()))
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
+            Text(item.kind == .image ? "图片" : "文本")
+                .font(.system(size: 11, weight: .regular))
                 .foregroundStyle(LCTheme.textTertiary)
-
+            Text(Self.relativeFormatter.localizedString(for: item.createdAt, relativeTo: Date()))
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(LCTheme.textTertiary)
             if item.kind == .image {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(item.byteSize), countStyle: .file))
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(LCTheme.textTertiary)
             }
         }
     }
 
-    private var kindTag: String {
-        item.kind == .image ? "IMG" : "TXT"
-    }
-
-    private var rowBackground: some View {
-        let highlight = isHovered || isSelected
-        return RoundedRectangle(cornerRadius: LCTheme.rowRadius, style: .continuous)
-            .fill(highlight ? LCTheme.inkSoft : LCTheme.paperElevated)
-            .overlay(
-                RoundedRectangle(cornerRadius: LCTheme.rowRadius, style: .continuous)
-                    .strokeBorder(highlight ? LCTheme.ink.opacity(0.28) : LCTheme.hairline, lineWidth: 1)
-            )
-            .shadow(color: Color.black.opacity(highlight ? 0.06 : 0.03), radius: highlight ? 6 : 2, y: 1)
-    }
-
     private func placeholder(icon: String) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(LCTheme.mist)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(LCTheme.fill)
             Image(systemName: icon)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(LCTheme.textSecondary)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(LCTheme.textTertiary)
         }
-        .frame(width: 44, height: 44)
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(LCTheme.hairline, lineWidth: 1)
-        )
+        .frame(width: 40, height: 40)
     }
 }
 
+
 // MARK: - Settings
 
-/// Preferences — “desk blotter”: wide paper field, indigo ink rail, stacked full-width actions.
+/// Minimal preferences — white / gray / single accent (system-settings style).
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @State private var launchAtLogin: Bool = true
 
     var body: some View {
-        ZStack {
-            // Soft paper field + cool wash
-            LCTheme.paper
-            LinearGradient(
-                colors: [
-                    Color(red: 0.90, green: 0.93, blue: 1.0).opacity(0.65),
-                    Color.clear
-                ],
-                startPoint: .topLeading,
-                endPoint: .center
-            )
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                Text("设置")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(LCTheme.textPrimary)
 
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 0) {
-                    hero
-                        .padding(.bottom, 28)
+                settingsGroup(title: "启动", subtitle: "开机后在菜单栏自动运行") {
+                    settingsRow {
+                        Text("登录时启动")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(LCTheme.textPrimary)
+                        Spacer()
+                        Toggle("", isOn: $launchAtLogin)
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                            .onChange(of: launchAtLogin) { new in
+                                model.registerLoginItem(enabled: new)
+                            }
+                    }
+                }
 
-                    VStack(alignment: .leading, spacing: 22) {
-                        sectionBlock(title: "关于隐私", caption: "数据不出本机") {
-                            privacyBody
+                settingsGroup(title: "权限", subtitle: "自动粘贴需要辅助功能授权") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text(model.accessibilityTrusted ? "辅助功能：已就绪" : "辅助功能：未授权")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(LCTheme.textPrimary)
+                            Spacer()
+                            Circle()
+                                .fill(model.accessibilityTrusted ? LCTheme.success : LCTheme.warning)
+                                .frame(width: 8, height: 8)
                         }
-                        sectionBlock(title: "启动与权限", caption: "登录项 · 辅助功能") {
-                            launchBody
-                            Divider().overlay(LCTheme.hairline).padding(.vertical, 4)
-                            accessBody
+                        HStack(spacing: 8) {
+                            minimalButton("检查") { model.refreshAccessibility() }
+                            minimalButton("系统设置") { AccessibilityPaste.openSystemSettings() }
                         }
-                        sectionBlock(title: "保留", caption: "自动清理") {
-                            retentionBody
-                        }
-                        sectionBlock(title: "更新", caption: "GitHub Releases") {
-                            updatesBody
-                        }
-                        sectionBlock(title: "退出", caption: nil) {
-                            quitBody
+                        minimalButton("退出并重新打开", fullWidth: true) {
+                            AccessibilityPaste.relaunchCurrentApp()
                         }
                     }
                 }
-                .padding(.horizontal, 36)
-                .padding(.vertical, 32)
-                .frame(maxWidth: 520)
-                .frame(maxWidth: .infinity)
+
+                settingsGroup(title: "保留", subtitle: "超出后自动清理记录与图片文件") {
+                    Text("最多 200 条 · 保留 7 天")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(LCTheme.textPrimary)
+                }
+
+                settingsGroup(title: "更新", subtitle: "仅在点击时访问 GitHub Releases") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("当前版本 \(AppIdentity.currentVersion())")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(LCTheme.textPrimary)
+                        if let msg = model.updateCheckMessage {
+                            Text(msg)
+                                .font(.system(size: 13))
+                                .foregroundStyle(LCTheme.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        VStack(spacing: 8) {
+                            minimalButton(
+                                model.isCheckingUpdate ? "检查中…" : "检查更新",
+                                fullWidth: true,
+                                primary: true,
+                                enabled: !model.isCheckingUpdate && !model.isInstallingUpdate
+                            ) {
+                                model.checkForUpdates()
+                            }
+                            if model.updateAvailable {
+                                minimalButton(
+                                    model.isInstallingUpdate ? "安装中…" : "立即更新",
+                                    fullWidth: true,
+                                    primary: true,
+                                    enabled: !model.isInstallingUpdate && model.updateZipURL != nil
+                                ) {
+                                    model.installUpdate()
+                                }
+                                minimalButton("打开下载页", fullWidth: true) {
+                                    model.openUpdatePage()
+                                }
+                            }
+                            minimalButton("GitHub", fullWidth: true) {
+                                NSWorkspace.shared.open(AppIdentity.githubURL)
+                            }
+                        }
+                    }
+                }
+
+                settingsGroup(title: "隐私", subtitle: nil) {
+                    Text("历史仅保存在本机 Application Support/LocalClip。无分析、无同步。默认不联网。")
+                        .font(.system(size: 13))
+                        .foregroundStyle(LCTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(3)
+                }
+
+                minimalButton("退出 LocalClip", fullWidth: true, destructive: true) {
+                    model.stop()
+                    NSApp.terminate(nil)
+                }
+                .padding(.top, 4)
             }
+            .padding(28)
+            .frame(maxWidth: 480)
+            .frame(maxWidth: .infinity)
         }
-        .frame(minWidth: 540, idealWidth: 560, minHeight: 640, idealHeight: 720)
+        .background(LCTheme.bg)
+        .frame(minWidth: 480, idealWidth: 520, minHeight: 560, idealHeight: 640)
         .preferredColorScheme(.light)
         .onAppear {
             launchAtLogin = model.settings.launchAtLogin
@@ -596,376 +569,74 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: Hero
-
-    private var hero: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 16) {
-                appMark
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("偏好设置")
-                        .font(.system(size: 26, weight: .semibold, design: .rounded))
-                        .foregroundStyle(LCTheme.textPrimary)
-                    Text("LocalClip · 菜单栏剪贴板")
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                        .foregroundStyle(LCTheme.textSecondary)
-                }
-                Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 6) {
-                    Text(GlobalHotKey.displayLabel)
-                        .font(.system(size: 15, weight: .bold, design: .monospaced))
-                        .foregroundStyle(LCTheme.ink)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(LCTheme.inkSoft)
-                        )
-                    Text("全局唤起")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(LCTheme.textTertiary)
-                }
-            }
-
-            // Version strip
-            HStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("VERSION")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(LCTheme.textTertiary)
-                        .tracking(1.1)
-                    Text(AppIdentity.currentVersion())
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundStyle(LCTheme.ink)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Rectangle()
-                    .fill(LCTheme.hairline)
-                    .frame(width: 1, height: 44)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("HOTKEY")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(LCTheme.textTertiary)
-                        .tracking(1.1)
-                    Text("⌥C 切换面板")
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .foregroundStyle(LCTheme.textPrimary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 20)
-            }
-            .padding(18)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(LCTheme.paperElevated)
-                    .shadow(color: Color.black.opacity(0.05), radius: 12, y: 4)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(LCTheme.hairline, lineWidth: 1)
-            )
-        }
-    }
-
-    private var appMark: some View {
-        Group {
-            if let icon = NSApp.applicationIconImage {
-                Image(nsImage: icon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-            } else {
-                ZStack {
-                    LinearGradient(
-                        colors: [LCTheme.ink, LCTheme.ink.opacity(0.7)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    Image(systemName: "paperclip")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(.white)
-                        .rotationEffect(.degrees(-22))
-                }
-            }
-        }
-        .frame(width: 56, height: 56)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: LCTheme.ink.opacity(0.25), radius: 10, y: 4)
-    }
-
-    // MARK: Sections
-
-    private func sectionBlock<Content: View>(
+    private func settingsGroup<Content: View>(
         title: String,
-        caption: String?,
+        subtitle: String?,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            // Signature ink rail
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(LCTheme.ink.opacity(0.85))
-                .frame(width: 3)
-                .padding(.top, 4)
-                .padding(.bottom, 4)
-
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .foregroundStyle(LCTheme.textPrimary)
-                    if let caption {
-                        Text(caption)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(LCTheme.textTertiary)
-                    }
-                }
-                content()
-            }
-            .padding(.leading, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(LCTheme.paperElevated)
-                .shadow(color: Color.black.opacity(0.04), radius: 10, y: 3)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(LCTheme.hairline, lineWidth: 1)
-        )
-    }
-
-    // MARK: Bodies
-
-    private var privacyBody: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("剪贴板历史只保存在本机 Application Support/LocalClip。")
-                .font(.system(size: 13, weight: .regular, design: .rounded))
-                .foregroundStyle(LCTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(4)
-            Text("无分析、无账号、无同步。默认不联网；仅在你点击检查/安装更新时访问 GitHub。")
-                .font(.system(size: 13, weight: .regular, design: .rounded))
-                .foregroundStyle(LCTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(4)
-        }
-    }
-
-    private var launchBody: some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("登录时启动")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(LCTheme.textPrimary)
-                Text("开机后常驻菜单栏，不显示 Dock 图标")
-                    .font(.system(size: 12, weight: .regular, design: .rounded))
-                    .foregroundStyle(LCTheme.textTertiary)
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(LCTheme.textPrimary)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(LCTheme.textSecondary)
             }
-            Spacer(minLength: 12)
-            Toggle("", isOn: $launchAtLogin)
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .onChange(of: launchAtLogin) { new in
-                    model.registerLoginItem(enabled: new)
-                }
+            content()
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(LCTheme.bg)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(LCTheme.border, lineWidth: 1)
+                        )
+                )
         }
     }
 
-    private var accessBody: some View {
-        let ready = model.accessibilityTrusted
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(ready ? LCTheme.success : LCTheme.warning)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: (ready ? LCTheme.success : LCTheme.warning).opacity(0.45), radius: 3)
-                Text(ready ? "自动粘贴已就绪" : "需要辅助功能授权")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(LCTheme.textPrimary)
-                Spacer()
-                Text(ready ? "OK" : "NEED")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(ready ? LCTheme.success : LCTheme.warning)
-            }
-
-            Text("授权后才能把历史自动粘贴到其它 App；未授权时仍可写入剪贴板，再手动 ⌘V。")
-                .font(.system(size: 12, weight: .regular, design: .rounded))
-                .foregroundStyle(LCTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(3)
-
-            // Full-width stacked actions — never cram chips in one row
-            VStack(spacing: 8) {
-                settingsSecondaryButton(title: "重新检查权限", systemImage: "arrow.clockwise") {
-                    model.refreshAccessibility()
-                }
-                settingsSecondaryButton(title: "打开系统辅助功能设置", systemImage: "gearshape") {
-                    AccessibilityPaste.openSystemSettings()
-                }
-                settingsSecondaryButton(title: "退出并重新打开（刷新权限）", systemImage: "arrow.triangle.2.circlepath") {
-                    AccessibilityPaste.relaunchCurrentApp()
-                }
-            }
-        }
+    private func settingsRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 12, content: content)
     }
 
-    private var retentionBody: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                retentionStat(value: "200", label: "条上限")
-                retentionStat(value: "7", label: "天上限")
-            }
-            Text("超出条数或天数会自动清理，对应图片文件一并删除。")
-                .font(.system(size: 12, weight: .regular, design: .rounded))
-                .foregroundStyle(LCTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var updatesBody: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("手动检查 GitHub Releases。有新版本时可一键下载并替换本机 App。")
-                .font(.system(size: 12, weight: .regular, design: .rounded))
-                .foregroundStyle(LCTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(3)
-
-            if let msg = model.updateCheckMessage {
-                Text(msg)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(model.updateAvailable ? LCTheme.ink : LCTheme.textPrimary)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(model.updateAvailable ? LCTheme.inkSoft : LCTheme.mist)
-                    )
-            }
-
-            VStack(spacing: 8) {
-                settingsPrimaryButton(
-                    title: model.isCheckingUpdate ? "检查中…" : "检查更新",
-                    systemImage: "arrow.triangle.2.circlepath",
-                    enabled: !model.isCheckingUpdate && !model.isInstallingUpdate
-                ) {
-                    model.checkForUpdates()
-                }
-
-                if model.updateAvailable {
-                    settingsPrimaryButton(
-                        title: model.isInstallingUpdate ? "正在下载安装…" : "立即更新并重启",
-                        systemImage: "arrow.down.app.fill",
-                        enabled: !model.isInstallingUpdate && model.updateZipURL != nil,
-                        emphasized: true
-                    ) {
-                        model.installUpdate()
-                    }
-
-                    settingsSecondaryButton(title: "在浏览器打开下载页", systemImage: "safari") {
-                        model.openUpdatePage()
-                    }
-                }
-
-                settingsSecondaryButton(title: "打开 GitHub 仓库", systemImage: "link") {
-                    NSWorkspace.shared.open(AppIdentity.githubURL)
-                }
-            }
-        }
-    }
-
-    private var quitBody: some View {
-        settingsSecondaryButton(title: "退出 LocalClip", systemImage: "power", destructive: true) {
-            model.stop()
-            NSApp.terminate(nil)
-        }
-    }
-
-    // MARK: Controls
-
-    private func retentionStat(value: String, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(value)
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(LCTheme.ink)
-            Text(label)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(LCTheme.textTertiary)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(LCTheme.inkSoft)
-        )
-    }
-
-    private func settingsPrimaryButton(
-        title: String,
-        systemImage: String,
+    private func minimalButton(
+        _ title: String,
+        fullWidth: Bool = false,
+        primary: Bool = false,
+        destructive: Bool = false,
         enabled: Bool = true,
-        emphasized: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(emphasized ? Color.white : LCTheme.ink)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(emphasized ? LCTheme.ink : LCTheme.inkSoft)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(emphasized ? Color.clear : LCTheme.ink.opacity(0.18), lineWidth: 1)
-            )
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(
+                    destructive ? LCTheme.danger :
+                        primary ? Color.white : LCTheme.textPrimary
+                )
+                .frame(maxWidth: fullWidth ? .infinity : nil)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(
+                            primary ? LCTheme.accent :
+                                destructive ? LCTheme.danger.opacity(0.08) : LCTheme.fill
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(
+                            primary ? Color.clear :
+                                destructive ? LCTheme.danger.opacity(0.2) : LCTheme.border,
+                            lineWidth: 1
+                        )
+                )
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.55)
-    }
-
-    private func settingsSecondaryButton(
-        title: String,
-        systemImage: String,
-        destructive: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(destructive ? LCTheme.danger : LCTheme.textSecondary)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(destructive ? LCTheme.danger.opacity(0.07) : LCTheme.mist)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(
-                        destructive ? LCTheme.danger.opacity(0.2) : LCTheme.hairline,
-                        lineWidth: 1
-                    )
-            )
-        }
-        .buttonStyle(.plain)
+        .opacity(enabled ? 1 : 0.5)
     }
 }

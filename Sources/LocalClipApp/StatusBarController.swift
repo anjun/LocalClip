@@ -259,18 +259,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let window = NSWindow(contentViewController: host)
             window.title = "LocalClip 偏好设置"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.setContentSize(NSSize(width: 560, height: 720))
-            window.minSize = NSSize(width: 520, height: 600)
+            window.setContentSize(NSSize(width: 520, height: 640))
+            window.minSize = NSSize(width: 480, height: 520)
             window.isReleasedWhenClosed = false
-            window.backgroundColor = NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.985, alpha: 1)
+            window.backgroundColor = .white
             window.center()
             preferencesWindow = window
         } else {
-            // Force layout refresh if content changed between builds.
             preferencesWindow?.contentViewController = NSHostingController(
                 rootView: SettingsView().environmentObject(model)
             )
-            preferencesWindow?.setContentSize(NSSize(width: 560, height: 720))
+            preferencesWindow?.setContentSize(NSSize(width: 520, height: 640))
         }
         preferencesWindow?.makeKeyAndOrderFront(nil)
     }

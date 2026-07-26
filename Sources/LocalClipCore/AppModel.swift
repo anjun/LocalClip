@@ -355,14 +355,15 @@ public final class AppModel: ObservableObject {
             do {
                 _ = try await UpdateChecker.downloadAndPrepareInstall(
                     zipURL: zip,
-                    onProgress: { [weak self] fraction in
-                        Task { @MainActor in
-                            self?.updateProgress = max(0, min(1, fraction))
+                    onProgress: { fraction in
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            self.updateProgress = max(0, min(1, fraction))
                             let pct = Int((fraction * 100).rounded())
                             if fraction < 0.95 {
-                                self?.updateCheckMessage = "正在下载… \(pct)%"
+                                self.updateCheckMessage = "正在下载… \(pct)%"
                             } else {
-                                self?.updateCheckMessage = "正在准备安装…"
+                                self.updateCheckMessage = "正在准备安装…"
                             }
                         }
                     }

@@ -1,50 +1,38 @@
+import AppKit
 import SwiftUI
 
-/// LocalClip visual system — “ink on pale paper”
-/// Signature: monospaced meta + indigo ink rail on soft white cards.
-/// User preference: brighter than the previous frosted-slate dark panel.
+/// Minimal system-like visual language (white / gray / single accent).
+/// Avoid gradients, glow, monospaced eyebrows, decorative rails.
 enum LCTheme {
-    // Palette — cool paper + indigo ink
-    static let ink = Color(red: 0.28, green: 0.36, blue: 0.92)          // indigo ink
-    static let inkSoft = Color(red: 0.35, green: 0.42, blue: 0.95).opacity(0.12)
-    static let paper = Color(red: 0.96, green: 0.97, blue: 0.985)        // pale paper
-    static let paperElevated = Color.white
-    static let mist = Color(red: 0.90, green: 0.92, blue: 0.96).opacity(0.85)
-    static let hairline = Color.black.opacity(0.07)
-    static let textPrimary = Color(red: 0.12, green: 0.14, blue: 0.18)
-    static let textSecondary = Color(red: 0.38, green: 0.42, blue: 0.50)
-    static let textTertiary = Color(red: 0.55, green: 0.58, blue: 0.64)
-    static let success = Color(red: 0.12, green: 0.62, blue: 0.45)
-    static let danger = Color(red: 0.86, green: 0.28, blue: 0.30)
-    static let warning = Color(red: 0.82, green: 0.55, blue: 0.12)
+    static let accent = Color(red: 0.0, green: 0.48, blue: 1.0) // system-like blue
+    static let bg = Color.white
+    static let bgSubtle = Color(red: 0.96, green: 0.96, blue: 0.97) // #F5F5F7
+    static let fill = Color(red: 0.95, green: 0.95, blue: 0.97)
+    static let border = Color(red: 0.90, green: 0.90, blue: 0.92)
+    static let textPrimary = Color(red: 0.11, green: 0.11, blue: 0.12)
+    static let textSecondary = Color(red: 0.53, green: 0.53, blue: 0.55)
+    static let textTertiary = Color(red: 0.68, green: 0.68, blue: 0.70)
+    static let success = Color(red: 0.20, green: 0.78, blue: 0.35)
+    static let danger = Color(red: 1.0, green: 0.23, blue: 0.19)
+    static let warning = Color(red: 1.0, green: 0.58, blue: 0.0)
 
-    // Compatibility aliases used by older call sites
-    static let slate = paper
-    static let slateElevated = paperElevated
+    // Compatibility aliases (old names used across views)
+    static let ink = accent
+    static let inkSoft = accent.opacity(0.10)
+    static let paper = bg
+    static let paperElevated = bg
+    static let mist = fill
+    static let hairline = border
+    static let slate = bgSubtle
+    static let slateElevated = bg
 
     static let panelWidth: CGFloat = 380
     static let panelHeight: CGFloat = 540
-    static let radius: CGFloat = 14
-    static let rowRadius: CGFloat = 12
+    static let radius: CGFloat = 10
+    static let rowRadius: CGFloat = 10
 
     static var panelBackground: some View {
-        ZStack {
-            paper
-            LinearGradient(
-                colors: [
-                    Color(red: 0.88, green: 0.91, blue: 1.0).opacity(0.55),
-                    Color.clear
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            RadialGradient(
-                colors: [ink.opacity(0.08), .clear],
-                center: .topTrailing,
-                startRadius: 20,
-                endRadius: 280
-            )
-        }
+        bgSubtle
     }
 }
 
@@ -79,7 +67,7 @@ struct LCSearchFieldStyle: TextFieldStyle {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(LCTheme.textTertiary)
             configuration
-                .font(.system(size: 13, weight: .regular, design: .rounded))
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(LCTheme.textPrimary)
                 .textFieldStyle(.plain)
         }
@@ -87,12 +75,11 @@ struct LCSearchFieldStyle: TextFieldStyle {
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(LCTheme.paperElevated)
+                .fill(LCTheme.fill)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(LCTheme.hairline, lineWidth: 1)
+                        .strokeBorder(LCTheme.border, lineWidth: 1)
                 )
-                .shadow(color: Color.black.opacity(0.03), radius: 2, y: 1)
         )
     }
 }
@@ -102,13 +89,13 @@ struct LCGhostButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .medium, design: .rounded))
+            .font(.system(size: 12, weight: .medium))
             .foregroundStyle(destructive ? LCTheme.danger : LCTheme.textSecondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(configuration.isPressed ? LCTheme.mist : Color.clear)
+                    .fill(configuration.isPressed ? LCTheme.fill : Color.clear)
             )
             .opacity(configuration.isPressed ? 0.85 : 1)
     }
@@ -119,26 +106,19 @@ struct LCChipToggleStyle: ToggleStyle {
         Button {
             configuration.isOn.toggle()
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: configuration.isOn ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 11, weight: .semibold))
-                configuration.label
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-            }
-            .foregroundStyle(configuration.isOn ? LCTheme.ink : LCTheme.textSecondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(configuration.isOn ? LCTheme.inkSoft : LCTheme.mist)
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .strokeBorder(
-                                configuration.isOn ? LCTheme.ink.opacity(0.35) : LCTheme.hairline,
-                                lineWidth: 1
-                            )
-                    )
-            )
+            Text(configuration.isOn ? "纯文本 · 开" : "纯文本")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(configuration.isOn ? Color.white : LCTheme.textSecondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(configuration.isOn ? LCTheme.accent : LCTheme.fill)
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .strokeBorder(configuration.isOn ? Color.clear : LCTheme.border, lineWidth: 1)
+                        )
+                )
         }
         .buttonStyle(.plain)
     }

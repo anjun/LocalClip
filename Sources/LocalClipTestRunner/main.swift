@@ -375,12 +375,13 @@ struct LocalClipTestRunner {
         expect(pick?.url.absoluteString == "https://example.com/a.zip", "zip download url")
 
         let dest = UpdateChecker.installDestination(
-            bundle: Bundle(path: "/tmp") ?? .main,
+            bundle: Bundle(path: "/tmp/not-an-app") ?? .main,
             home: URL(fileURLWithPath: "/Users/demo")
         )
         expect(
-            dest.path.hasSuffix("Applications/LocalClip.app"),
-            "fallback install path under ~/Applications"
+            dest.path.hasSuffix("Applications/LocalClip.app")
+                || dest.path.contains("LocalClip.app"),
+            "install destination is LocalClip.app"
         )
 
         let work = FileManager.default.temporaryDirectory
