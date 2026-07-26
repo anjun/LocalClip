@@ -210,3 +210,66 @@ struct LCChipToggleStyle: ToggleStyle {
         .buttonStyle(.plain)
     }
 }
+
+/// Dialog / window buttons — never use system `.bordered` alone (dark mode can hide labels).
+struct LCDialogButtonStyle: ButtonStyle {
+    var primary: Bool = false
+    var destructive: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(labelColor)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(fillColor(pressed: configuration.isPressed))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(strokeColor, lineWidth: primary ? 0 : 1)
+            )
+            .opacity(configuration.isPressed ? 0.88 : 1)
+    }
+
+    private var labelColor: Color {
+        if primary { return Color.white }
+        if destructive { return LCTheme.danger }
+        return LCTheme.textPrimary
+    }
+
+    private func fillColor(pressed: Bool) -> Color {
+        if primary {
+            return pressed ? LCTheme.accent.opacity(0.85) : LCTheme.accent
+        }
+        if destructive {
+            return LCTheme.danger.opacity(pressed ? 0.16 : 0.10)
+        }
+        return pressed ? LCTheme.fill.opacity(0.9) : LCTheme.fill
+    }
+
+    private var strokeColor: Color {
+        if primary { return Color.clear }
+        if destructive { return LCTheme.danger.opacity(0.28) }
+        return LCTheme.border
+    }
+}
+
+/// Sync AppKit hosts to the current system light/dark appearance.
+enum LCAppearance {
+    static func applySystem(to window: NSWindow?) {
+        guard let window else { return }
+        window.appearance = NSApp.effectiveAppearance
+        window.backgroundColor = LCTheme.windowNSBackground
+        window.contentView?.appearance = NSApp.effectiveAppearance
+    }
+
+    static func applySystem(to view: NSView?) {
+        guard let view else { return }
+        view.appearance = NSApp.effectiveAppearance
+        if view.wantsLayer {
+            view.layer?.backgroundColor = LCTheme.panelNSBackground.cgColor
+        }
+    }
+}

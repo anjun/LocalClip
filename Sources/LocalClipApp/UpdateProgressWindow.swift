@@ -16,6 +16,7 @@ final class UpdateProgressController: NSObject {
 
     func showAndStartCheck() {
         ensureWindow()
+        LCAppearance.applySystem(to: window)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         if !model.isCheckingUpdate && !model.isInstallingUpdate {
@@ -30,13 +31,14 @@ final class UpdateProgressController: NSObject {
                 self?.window?.close()
             }
         )
+        host.view.appearance = NSApp.effectiveAppearance
         let win = NSWindow(contentViewController: host)
         win.title = "软件更新"
         win.styleMask = [.titled, .closable]
         win.setContentSize(NSSize(width: 400, height: 220))
         win.isReleasedWhenClosed = false
         win.center()
-        win.backgroundColor = LCTheme.windowNSBackground
+        LCAppearance.applySystem(to: win)
         window = win
     }
 }
@@ -71,21 +73,32 @@ struct UpdateProgressView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(LCTheme.border, lineWidth: 1)
+                    .fill(LCTheme.fill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(LCTheme.border, lineWidth: 1)
+                    )
             )
 
-            HStack {
+            HStack(spacing: 8) {
                 Button("关闭") { onClose() }
+                    .buttonStyle(LCDialogButtonStyle())
                     .keyboardShortcut(.cancelAction)
-                Spacer()
+
+                Spacer(minLength: 8)
+
                 if !model.isCheckingUpdate && !model.isInstallingUpdate {
                     Button("重新检查") { model.checkForUpdates() }
+                        .buttonStyle(LCDialogButtonStyle())
                 }
                 if model.updateAvailable, !model.isInstallingUpdate {
                     Button("打开下载页") { model.openUpdatePage() }
+                        .buttonStyle(LCDialogButtonStyle())
                     Button("立即更新") { model.installUpdate() }
+                        .buttonStyle(LCDialogButtonStyle(primary: true))
                         .keyboardShortcut(.defaultAction)
                         .disabled(model.updateZipURL == nil)
+                        .opacity(model.updateZipURL == nil ? 0.5 : 1)
                 }
             }
         }

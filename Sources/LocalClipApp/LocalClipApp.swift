@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let icon = NSImage(contentsOf: url) {
             NSApp.applicationIconImage = icon
         }
+        // Hide the SwiftUI bootstrap window (required Scene; all real UI is AppKit).
+        Self.hideBootstrapWindows()
         guard let model = AppDelegate.sharedModel else { return }
         model.start()
         if AppDelegate.statusBar == nil {
@@ -22,10 +24,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppDelegate.statusBar = bar
         }
         model.refreshAccessibility()
+        // One more pass after SwiftUI creates its Scene window.
+        DispatchQueue.main.async {
+            Self.hideBootstrapWindows()
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         AppDelegate.sharedModel?.refreshAccessibility()
+        // Never let the bootstrap / stray Settings-style window reappear on activate.
+        Self.hideBootstrapWindows()
+    }
+
+    /// Order out the dummy WindowGroup used only for SwiftUI lifecycle.
+    static func hideBootstrapWindows() {
+        for window in NSApp.windows {
+            let id = window.identifier?.rawValue ?? ""
+            if id == "localclip-bootstrap"
+                || window.title == "LocalClip Bootstrap"
+                || (window.contentView?.subviews.isEmpty == true && window.frame.width <= 2) {
+                window.alphaValue = 0
+                window.collectionBehavior.insert([.transient, .ignoresCycle, .stationary])
+                window.orderOut(nil)
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -59,10 +81,21 @@ struct LocalClipApp: App {
     }
 
     var body: some Scene {
-        Settings {
-            SettingsView()
-                .environmentObject(model)
+        // Dummy scene only — real UI is AppKit (status item / popover / prefs window).
+        // Do NOT use Settings { }: it opens on Cmd+, and can reappear when the app
+        // becomes active (looked like “right-click menu opened preferences”).
+        WindowGroup(id: "localclip-bootstrap") {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityHidden(true)
+                .onAppear {
+                    AppDelegate.hideBootstrapWindows()
+                }
         }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultSize(width: 1, height: 1)
+        .commandsRemoved()
     }
 }
 
@@ -613,7 +646,7 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(LCTheme.bg)
+                        .fill(LCTheme.fill)
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .strokeBorder(LCTheme.border, lineWidth: 1)
@@ -637,30 +670,9 @@ struct SettingsView: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(
-                    destructive ? LCTheme.danger :
-                        primary ? Color.white : LCTheme.textPrimary
-                )
                 .frame(maxWidth: fullWidth ? .infinity : nil)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(
-                            primary ? LCTheme.accent :
-                                destructive ? LCTheme.danger.opacity(0.08) : LCTheme.fill
-                        )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(
-                            primary ? Color.clear :
-                                destructive ? LCTheme.danger.opacity(0.2) : LCTheme.border,
-                            lineWidth: 1
-                        )
-                )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LCDialogButtonStyle(primary: primary, destructive: destructive))
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.5)
     }

@@ -12,9 +12,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var permissionTimer: Timer?
     /// Keep menu alive while open (status-item menu=nil hack used to drop actions).
     private var activeContextMenu: NSMenu?
-    /// Owned prefs window — SwiftUI Settings scene is unreliable for LSUIElement apps.
+    /// Owned prefs window — never use SwiftUI Settings scene (it opens unexpectedly).
     private var preferencesWindow: NSWindow?
     private var updateProgressController: UpdateProgressController?
+
+    /// After context menu closes, the dismissing click can fall through to the status
+    /// button as a left-click. Swallow status-item actions briefly.
+    private var suppressStatusActionsUntil: Date = .distantPast
+
+    /// Menu item tags — only these exact items may open prefs / updates.
+    private enum MenuTag: Int {
+        case preferences = 1001
+        case checkUpdates = 1002
+    }
 
     init(model: AppModel) {
         self.model = model
@@ -31,6 +41,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        // Never assign statusItem.menu — that fights the action-based click handler
+        // and has historically opened preferences / dropped menu actions.
         statusItem = item
 
         let pop = NSPopover()
@@ -42,11 +54,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 .environmentObject(model)
                 .frame(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
         )
-        if #available(macOS 10.14, *) {
-            host.view.wantsLayer = true
-            // Dynamic color so dark mode follows system appearance.
-            host.view.layer?.backgroundColor = LCTheme.panelNSBackground.cgColor
-        }
+        host.view.wantsLayer = true
+        LCAppearance.applySystem(to: host.view)
         pop.contentViewController = host
         popover = pop
 
@@ -78,8 +87,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        if Date() < suppressStatusActionsUntil {
+            return
+        }
+
         let event = NSApp.currentEvent
-        // Right-click or Control-click → context menu only (never open prefs by default).
+        // Right-click or Control-click → context menu only.
         if let event,
            event.type == .rightMouseUp
             || event.type == .rightMouseDown
@@ -87,19 +100,24 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             showContextMenu(with: event)
             return
         }
+        // Left-click only opens the history panel — never preferences.
         togglePopover()
     }
 
     private func showContextMenu(with event: NSEvent) {
         guard let button = statusItem?.button else { return }
 
+        // Close history popover first so menu / prefs / update windows don't fight it.
+        closePopover()
         model.refreshAccessibility()
 
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.delegate = self
 
-        // No keyEquivalents on any item — context menu only, no shortcut side-effects.
+        // No keyEquivalents on any item — empty keyEquivalent prevents system shortcuts
+        // (especially "," for Preferences) from auto-firing when the menu appears.
+
         let trustItem = NSMenuItem(
             title: AccessibilityPaste.trustStatusLabel(),
             action: nil,
@@ -117,21 +135,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         recheck.isEnabled = true
         menu.addItem(recheck)
 
-        let prefs = NSMenuItem(
-            title: "偏好设置…",
-            action: #selector(openAppSettings(_:)),
-            keyEquivalent: ""
-        )
-        prefs.target = self
-        prefs.isEnabled = true
-        menu.addItem(prefs)
-
         let updates = NSMenuItem(
             title: "检查更新…",
             action: #selector(checkForUpdates(_:)),
             keyEquivalent: ""
         )
         updates.target = self
+        updates.tag = MenuTag.checkUpdates.rawValue
         updates.isEnabled = true
         menu.addItem(updates)
 
@@ -155,6 +165,18 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        // Preferences near the bottom — less likely to be hit by a sloppy click
+        // when the menu first appears under the cursor.
+        let prefs = NSMenuItem(
+            title: "偏好设置…",
+            action: #selector(openAppSettings(_:)),
+            keyEquivalent: ""
+        )
+        prefs.target = self
+        prefs.tag = MenuTag.preferences.rawValue
+        prefs.isEnabled = true
+        menu.addItem(prefs)
+
         let quitItem = NSMenuItem(
             title: "退出 LocalClip",
             action: #selector(quit(_:)),
@@ -165,7 +187,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(quitItem)
 
         // Critical: pop up in-place. Do NOT assign statusItem.menu then clear it —
-        // that race cancelled item actions (「重新检查」看起来没反应).
+        // that race cancelled item actions and could surface the wrong window.
         activeContextMenu = menu
         NSMenu.popUpContextMenu(menu, with: event, for: button)
     }
@@ -174,6 +196,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if menu === activeContextMenu {
             activeContextMenu = nil
         }
+        // Swallow the click that dismissed the menu (and any immediate re-entry).
+        suppressStatusActionsUntil = Date().addingTimeInterval(0.35)
     }
 
     /// Shared by menu-bar click and global hotkey ⌥C.
@@ -185,18 +209,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            // Re-resolve dynamic colors for current light/dark appearance.
-            if #available(macOS 10.14, *) {
-                popover.contentViewController?.view.layer?.backgroundColor =
-                    LCTheme.panelNSBackground.cgColor
-            }
+            LCAppearance.applySystem(to: popover.contentViewController?.view)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             // Activate + key window so local key monitors receive ↑/↓/Return.
             NSApp.activate(ignoringOtherApps: true)
             if let win = popover.contentViewController?.view.window {
                 win.makeKey()
-                // Don't leave focus stuck in the search field only — still allow typing,
-                // but key router intercepts arrows/return regardless of first responder.
                 win.makeFirstResponder(popover.contentViewController?.view)
             }
         }
@@ -218,7 +236,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             model.statusMessage = "仍未信任：请在设置中勾选 LocalClip 后「退出并重新打开」"
         }
 
-        // Visible feedback even when the history panel is closed.
         let alert = NSAlert()
         alert.messageText = label
         if trusted {
@@ -246,42 +263,56 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc func checkForUpdates(_ sender: Any?) {
-        // Dedicated progress window — never open Preferences for updates.
+        // Only accept explicit menu selection (or internal nil for tests/tools).
+        if let item = sender as? NSMenuItem, item.tag != MenuTag.checkUpdates.rawValue {
+            return
+        }
         if updateProgressController == nil {
             updateProgressController = UpdateProgressController(model: model)
         }
         updateProgressController?.showAndStartCheck()
     }
 
-    /// Opens app preferences (login item, privacy). Dedicated window — more reliable
-    /// than `showSettingsWindow:` for LSUIElement / menu-bar-only apps.
+    /// Opens app preferences (login item, privacy). Dedicated window only —
+    /// never SwiftUI `Settings` scene (that scene opens on activation / Cmd+,).
     @objc func openAppSettings(_ sender: Any?) {
+        // Refuse unexpected senders so prefs cannot open from stray actions.
+        if let sender {
+            if let item = sender as? NSMenuItem {
+                guard item.tag == MenuTag.preferences.rawValue else { return }
+            } else if !(sender is NSButton) {
+                return
+            }
+        }
+
         NSApp.activate(ignoringOtherApps: true)
         if preferencesWindow == nil {
             let host = NSHostingController(
                 rootView: SettingsView()
                     .environmentObject(model)
             )
+            host.view.appearance = NSApp.effectiveAppearance
             let window = NSWindow(contentViewController: host)
             window.title = "LocalClip 偏好设置"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.setContentSize(NSSize(width: 520, height: 640))
             window.minSize = NSSize(width: 480, height: 520)
             window.isReleasedWhenClosed = false
-            window.backgroundColor = LCTheme.windowNSBackground
+            window.identifier = NSUserInterfaceItemIdentifier("localclip.preferences")
             window.center()
             preferencesWindow = window
         } else {
             preferencesWindow?.contentViewController = NSHostingController(
                 rootView: SettingsView().environmentObject(model)
             )
+            preferencesWindow?.contentViewController?.view.appearance = NSApp.effectiveAppearance
             preferencesWindow?.setContentSize(NSSize(width: 520, height: 640))
         }
+        LCAppearance.applySystem(to: preferencesWindow)
         preferencesWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc func openAccessibilitySettings(_ sender: Any?) {
-        // Open Settings only — no AX prompt dialog (redundant with Settings list).
         AccessibilityPaste.openSystemSettings()
         model.refreshAccessibility()
     }
