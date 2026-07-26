@@ -62,7 +62,6 @@ struct LocalClipApp: App {
         Settings {
             SettingsView()
                 .environmentObject(model)
-                .frame(width: 400, height: 320)
         }
     }
 }
@@ -541,50 +540,331 @@ struct HistoryRow: View {
 
 // MARK: - Settings
 
+/// Preferences window — same “ink on paper” system as the history panel.
+/// Spacious card layout (not cramped grouped Form).
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @State private var launchAtLogin: Bool = true
 
+    private let contentWidth: CGFloat = 440
+
     var body: some View {
-        Form {
-            Section("隐私") {
-                Text("历史仅保存在本机 Application Support/LocalClip。无网络、无分析、无同步。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Section("启动") {
-                Toggle("登录时启动", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { new in
-                        model.registerLoginItem(enabled: new)
-                    }
-                    .onAppear { launchAtLogin = model.settings.launchAtLogin }
-            }
-            Section("权限") {
-                HStack {
-                    Text(AccessibilityPaste.trustStatusLabel())
-                    Spacer()
-                    Button("检查") { model.refreshAccessibility() }
-                    Button("系统设置…") {
-                        _ = AccessibilityPaste.isTrusted(prompt: true)
-                        AccessibilityPaste.openSystemSettings()
-                    }
+        ZStack {
+            LCTheme.panelBackground
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
+                    privacyCard
+                    launchCard
+                    permissionCard
+                    retentionCard
+                    quitCard
                 }
-                Button("退出并重新打开") {
-                    AccessibilityPaste.relaunchCurrentApp()
+                .padding(28)
+                .frame(maxWidth: contentWidth + 56)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .frame(minWidth: 480, idealWidth: 520, minHeight: 560, idealHeight: 620)
+        .preferredColorScheme(.light)
+        .onAppear {
+            launchAtLogin = model.settings.launchAtLogin
+            model.refreshAccessibility()
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [LCTheme.ink, LCTheme.ink.opacity(0.75)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 44, height: 44)
+                    .shadow(color: LCTheme.ink.opacity(0.28), radius: 8, y: 3)
+                if let icon = NSApp.applicationIconImage {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 44, height: 44)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else {
+                    Image(systemName: "paperclip")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(.white)
+                        .rotationEffect(.degrees(-25))
                 }
             }
-            Section("保留") {
-                Text("默认最多 200 条，且不超过 7 天。")
-                    .font(.caption)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("LocalClip")
+                    .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    .foregroundStyle(LCTheme.textPrimary)
+                Text("偏好设置 · 本地 · 零联网")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(LCTheme.textTertiary)
             }
-            Section("退出") {
-                Button("退出 LocalClip", role: .destructive) {
-                    model.stop()
-                    NSApp.terminate(nil)
+            Spacer(minLength: 0)
+            Text(GlobalHotKey.displayLabel)
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(LCTheme.ink)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(LCTheme.inkSoft)
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .strokeBorder(LCTheme.ink.opacity(0.22), lineWidth: 1)
+                        )
+                )
+                .help("全局快捷键：切换历史面板")
+        }
+        .padding(.bottom, 4)
+    }
+
+    // MARK: Cards
+
+    private var privacyCard: some View {
+        settingsCard(eyebrow: "PRIVACY", title: "隐私") {
+            HStack(alignment: .top, spacing: 12) {
+                settingsGlyph(systemName: "lock.shield.fill", tint: LCTheme.ink)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("历史只存在本机")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(LCTheme.textPrimary)
+                    Text("路径 Application Support/LocalClip。无网络、无分析、无同步。")
+                        .font(.system(size: 12, weight: .regular, design: .rounded))
+                        .foregroundStyle(LCTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(3)
                 }
             }
         }
-        .padding()
-        .formStyle(.grouped)
+    }
+
+    private var launchCard: some View {
+        settingsCard(eyebrow: "LAUNCH", title: "启动") {
+            HStack(spacing: 14) {
+                settingsGlyph(systemName: "power", tint: LCTheme.success)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("登录时启动")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(LCTheme.textPrimary)
+                    Text("开机后在菜单栏自动运行（不显示 Dock 图标）")
+                        .font(.system(size: 12, weight: .regular, design: .rounded))
+                        .foregroundStyle(LCTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Toggle("", isOn: $launchAtLogin)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .onChange(of: launchAtLogin) { new in
+                        model.registerLoginItem(enabled: new)
+                    }
+            }
+        }
+    }
+
+    private var permissionCard: some View {
+        let ready = model.accessibilityTrusted
+        return settingsCard(eyebrow: "ACCESS", title: "权限") {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .center, spacing: 14) {
+                    settingsGlyph(
+                        systemName: ready ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
+                        tint: ready ? LCTheme.success : LCTheme.warning
+                    )
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(ready ? "自动粘贴已就绪" : "需要辅助功能授权")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(LCTheme.textPrimary)
+                        Text(AccessibilityPaste.trustStatusLabel())
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(ready ? LCTheme.success : LCTheme.warning)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                Text("授权后才能把历史内容自动粘贴到其它 App；未授权时仍可写入剪贴板，再手动 ⌘V。")
+                    .font(.system(size: 12, weight: .regular, design: .rounded))
+                    .foregroundStyle(LCTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineSpacing(3)
+
+                HStack(spacing: 10) {
+                    Button {
+                        model.refreshAccessibility()
+                    } label: {
+                        labelChip("检查", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        _ = AccessibilityPaste.isTrusted(prompt: true)
+                        AccessibilityPaste.openSystemSettings()
+                    } label: {
+                        labelChip("系统设置…", systemImage: "gearshape")
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer(minLength: 0)
+                }
+
+                Button {
+                    AccessibilityPaste.relaunchCurrentApp()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                        Text("退出并重新打开")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundStyle(LCTheme.ink)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(LCTheme.inkSoft)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(LCTheme.ink.opacity(0.22), lineWidth: 1)
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("改权限后需完全退出再打开，TCC 才会刷新")
+            }
+        }
+    }
+
+    private var retentionCard: some View {
+        settingsCard(eyebrow: "KEEP", title: "保留策略") {
+            HStack(spacing: 16) {
+                metricPill(value: "200", unit: "条上限")
+                metricPill(value: "7", unit: "天上限")
+                Spacer(minLength: 0)
+            }
+            Text("超出条数或天数的记录会自动清理，图片文件一并删除。")
+                .font(.system(size: 12, weight: .regular, design: .rounded))
+                .foregroundStyle(LCTheme.textSecondary)
+                .padding(.top, 12)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(3)
+        }
+    }
+
+    private var quitCard: some View {
+        settingsCard(eyebrow: "QUIT", title: "退出") {
+            Button {
+                model.stop()
+                NSApp.terminate(nil)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "power")
+                    Text("退出 LocalClip")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                }
+                .foregroundStyle(LCTheme.danger)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(LCTheme.danger.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(LCTheme.danger.opacity(0.22), lineWidth: 1)
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    // MARK: Building blocks
+
+    private func settingsCard<Content: View>(
+        eyebrow: String,
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(eyebrow)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(LCTheme.ink)
+                    .tracking(1.2)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(LCTheme.textPrimary)
+                Spacer(minLength: 0)
+            }
+            content()
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(LCTheme.paperElevated)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(LCTheme.hairline, lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
+        )
+    }
+
+    private func settingsGlyph(systemName: String, tint: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(tint.opacity(0.12))
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+        }
+        .frame(width: 36, height: 36)
+    }
+
+    private func labelChip(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+            Text(title)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+        }
+        .foregroundStyle(LCTheme.textSecondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(LCTheme.mist)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(LCTheme.hairline, lineWidth: 1)
+                )
+        )
+    }
+
+    private func metricPill(value: String, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value)
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundStyle(LCTheme.ink)
+            Text(unit)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(LCTheme.textTertiary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(LCTheme.inkSoft)
+        )
     }
 }

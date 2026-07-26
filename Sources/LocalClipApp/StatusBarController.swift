@@ -244,22 +244,24 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let host = NSHostingController(
                 rootView: SettingsView()
                     .environmentObject(model)
-                    .frame(minWidth: 400, minHeight: 320)
             )
             let window = NSWindow(contentViewController: host)
             window.title = "LocalClip 偏好设置"
-            window.styleMask = [.titled, .closable, .miniaturizable]
-            window.setContentSize(NSSize(width: 420, height: 360))
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 520, height: 640))
+            window.minSize = NSSize(width: 480, height: 520)
             window.isReleasedWhenClosed = false
+            window.backgroundColor = NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.985, alpha: 1)
             window.center()
             preferencesWindow = window
+        } else {
+            // Force layout refresh if content changed between builds.
+            preferencesWindow?.contentViewController = NSHostingController(
+                rootView: SettingsView().environmentObject(model)
+            )
+            preferencesWindow?.setContentSize(NSSize(width: 520, height: 640))
         }
         preferencesWindow?.makeKeyAndOrderFront(nil)
-        // Also try system Settings scene for apps that support it (no-op if missing).
-        let settingsSel = Selector(("showSettingsWindow:"))
-        if NSApp.responds(to: settingsSel) {
-            NSApp.sendAction(settingsSel, to: nil, from: nil)
-        }
     }
 
     @objc func openAccessibilitySettings(_ sender: Any?) {
