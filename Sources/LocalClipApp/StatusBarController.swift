@@ -49,7 +49,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         popover = pop
 
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.model.refreshAccessibility()
             }
         }
@@ -66,7 +66,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func installGlobalHotKey() {
         GlobalHotKey.shared.onPressed = { [weak self] in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.togglePopover()
             }
         }
