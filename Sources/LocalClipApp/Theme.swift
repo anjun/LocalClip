@@ -1,24 +1,88 @@
 import AppKit
 import SwiftUI
 
-/// Minimal system-like visual language (white / gray / single accent).
+/// System-aligned visual language with light/dark adaptive colors.
 /// Avoid gradients, glow, monospaced eyebrows, decorative rails.
 enum LCTheme {
-    static let accent = Color(red: 0.0, green: 0.48, blue: 1.0) // system-like blue
-    static let bg = Color.white
-    static let bgSubtle = Color(red: 0.96, green: 0.96, blue: 0.97) // #F5F5F7
-    static let fill = Color(red: 0.95, green: 0.95, blue: 0.97)
-    static let border = Color(red: 0.90, green: 0.90, blue: 0.92)
-    static let textPrimary = Color(red: 0.11, green: 0.11, blue: 0.12)
-    static let textSecondary = Color(red: 0.53, green: 0.53, blue: 0.55)
-    static let textTertiary = Color(red: 0.68, green: 0.68, blue: 0.70)
-    static let success = Color(red: 0.20, green: 0.78, blue: 0.35)
-    static let danger = Color(red: 1.0, green: 0.23, blue: 0.19)
-    static let warning = Color(red: 1.0, green: 0.58, blue: 0.0)
+    /// Accent blue that stays readable on both light and dark surfaces.
+    static let accent = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedRed: 0.40, green: 0.68, blue: 1.0, alpha: 1)
+            : NSColor(calibratedRed: 0.0, green: 0.48, blue: 1.0, alpha: 1)
+    }))
 
-    // Compatibility aliases (old names used across views)
+    static let bg = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.13, alpha: 1)
+            : NSColor.white
+    }))
+
+    static let bgSubtle = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedRed: 0.15, green: 0.15, blue: 0.16, alpha: 1)
+            : NSColor(calibratedRed: 0.96, green: 0.96, blue: 0.97, alpha: 1)
+    }))
+
+    static let fill = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedWhite: 1.0, alpha: 0.08)
+            : NSColor(calibratedRed: 0.95, green: 0.95, blue: 0.97, alpha: 1)
+    }))
+
+    static let border = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedWhite: 1.0, alpha: 0.12)
+            : NSColor(calibratedRed: 0.90, green: 0.90, blue: 0.92, alpha: 1)
+    }))
+
+    static let textPrimary = Color(nsColor: .labelColor)
+    static let textSecondary = Color(nsColor: .secondaryLabelColor)
+    static let textTertiary = Color(nsColor: .tertiaryLabelColor)
+
+    static let success = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedRed: 0.30, green: 0.85, blue: 0.45, alpha: 1)
+            : NSColor(calibratedRed: 0.20, green: 0.78, blue: 0.35, alpha: 1)
+    }))
+
+    static let danger = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedRed: 1.0, green: 0.40, blue: 0.38, alpha: 1)
+            : NSColor(calibratedRed: 1.0, green: 0.23, blue: 0.19, alpha: 1)
+    }))
+
+    static let warning = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedRed: 1.0, green: 0.72, blue: 0.20, alpha: 1)
+            : NSColor(calibratedRed: 1.0, green: 0.58, blue: 0.0, alpha: 1)
+    }))
+
+    /// Selected-row fill: stronger in dark mode so keyboard/hover selection stays obvious.
+    static let selectionFill = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedRed: 0.28, green: 0.48, blue: 0.85, alpha: 0.42)
+            : NSColor(calibratedRed: 0.0, green: 0.48, blue: 1.0, alpha: 0.12)
+    }))
+
+    static let selectionStroke = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedRed: 0.45, green: 0.70, blue: 1.0, alpha: 0.55)
+            : NSColor(calibratedRed: 0.0, green: 0.48, blue: 1.0, alpha: 0.35)
+    }))
+
+    static let hoverFill = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedWhite: 1.0, alpha: 0.07)
+            : NSColor(calibratedRed: 0.95, green: 0.95, blue: 0.97, alpha: 1)
+    }))
+
+    // Compatibility aliases
     static let ink = accent
-    static let inkSoft = accent.opacity(0.10)
+    static let inkSoft = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(calibratedRed: 0.40, green: 0.68, blue: 1.0, alpha: 0.18)
+            : NSColor(calibratedRed: 0.0, green: 0.48, blue: 1.0, alpha: 0.10)
+    }))
     static let paper = bg
     static let paperElevated = bg
     static let mist = fill
@@ -33,6 +97,29 @@ enum LCTheme {
 
     static var panelBackground: some View {
         bgSubtle
+    }
+
+    /// Resolved NSColor for AppKit hosts (popover / window chrome).
+    static var panelNSBackground: NSColor {
+        NSColor(name: nil, dynamicProvider: { appearance in
+            appearance.isDark
+                ? NSColor(calibratedRed: 0.15, green: 0.15, blue: 0.16, alpha: 1)
+                : NSColor(calibratedRed: 0.96, green: 0.96, blue: 0.97, alpha: 1)
+        })
+    }
+
+    static var windowNSBackground: NSColor {
+        NSColor(name: nil, dynamicProvider: { appearance in
+            appearance.isDark
+                ? NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.13, alpha: 1)
+                : NSColor.white
+        })
+    }
+}
+
+private extension NSAppearance {
+    var isDark: Bool {
+        bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 }
 

@@ -110,7 +110,6 @@ struct HistoryPanel: View {
             }
         }
         .frame(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
-        .preferredColorScheme(.light)
         .onAppear {
             model.refreshAsync()
             model.refreshAccessibility()
@@ -390,14 +389,14 @@ struct HistoryRow: View {
                 .fill(rowFill)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(isSelected ? LCTheme.accent.opacity(0.35) : Color.clear, lineWidth: 1)
+                        .strokeBorder(isSelected ? LCTheme.selectionStroke : Color.clear, lineWidth: 1)
                 )
         )
     }
 
     private var rowFill: Color {
-        if isSelected { return LCTheme.accent.opacity(0.10) }
-        if isHovered { return LCTheme.fill }
+        if isSelected { return LCTheme.selectionFill }
+        if isHovered { return LCTheme.hoverFill }
         return Color.clear
     }
 
@@ -475,7 +474,7 @@ struct HistoryRow: View {
 
 // MARK: - Settings
 
-/// Minimal preferences — white / gray / single accent (system-settings style).
+/// Preferences — system-aligned light/dark surfaces.
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @State private var launchAtLogin: Bool = true
@@ -589,7 +588,6 @@ struct SettingsView: View {
         }
         .background(LCTheme.bg)
         .frame(minWidth: 480, idealWidth: 520, minHeight: 560, idealHeight: 640)
-        .preferredColorScheme(.light)
         .onAppear {
             launchAtLogin = model.settings.launchAtLogin
             model.refreshAccessibility()

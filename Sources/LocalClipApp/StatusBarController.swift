@@ -44,7 +44,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         )
         if #available(macOS 10.14, *) {
             host.view.wantsLayer = true
-            host.view.layer?.backgroundColor = NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.985, alpha: 1).cgColor
+            // Dynamic color so dark mode follows system appearance.
+            host.view.layer?.backgroundColor = LCTheme.panelNSBackground.cgColor
         }
         pop.contentViewController = host
         popover = pop
@@ -184,6 +185,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            // Re-resolve dynamic colors for current light/dark appearance.
+            if #available(macOS 10.14, *) {
+                popover.contentViewController?.view.layer?.backgroundColor =
+                    LCTheme.panelNSBackground.cgColor
+            }
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             // Activate + key window so local key monitors receive ↑/↓/Return.
             NSApp.activate(ignoringOtherApps: true)
@@ -262,7 +268,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             window.setContentSize(NSSize(width: 520, height: 640))
             window.minSize = NSSize(width: 480, height: 520)
             window.isReleasedWhenClosed = false
-            window.backgroundColor = .white
+            window.backgroundColor = LCTheme.windowNSBackground
             window.center()
             preferencesWindow = window
         } else {

@@ -36,7 +36,7 @@ final class UpdateProgressController: NSObject {
         win.setContentSize(NSSize(width: 400, height: 220))
         win.isReleasedWhenClosed = false
         win.center()
-        win.backgroundColor = .white
+        win.backgroundColor = LCTheme.windowNSBackground
         window = win
     }
 }
