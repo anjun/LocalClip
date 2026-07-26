@@ -359,19 +359,46 @@ struct HistoryRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
+            // Selected accent bar (minimal, system-list style)
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(isSelected ? LCTheme.accent : Color.clear)
+                .frame(width: 3, height: 36)
+
             mediaThumb
             VStack(alignment: .leading, spacing: 4) {
                 primaryLabel
                 metaLine
             }
             Spacer(minLength: 0)
+
+            if isSelected {
+                Image(systemName: "return")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(LCTheme.accent)
+                    .padding(6)
+                    .background(
+                        Circle().fill(LCTheme.accent.opacity(0.12))
+                    )
+                    .help("Return 粘贴")
+            }
         }
-        .padding(.horizontal, 10)
+        .padding(.leading, 6)
+        .padding(.trailing, 10)
         .padding(.vertical, 10)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isHovered || isSelected ? LCTheme.fill : Color.clear)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(rowFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(isSelected ? LCTheme.accent.opacity(0.35) : Color.clear, lineWidth: 1)
+                )
         )
+    }
+
+    private var rowFill: Color {
+        if isSelected { return LCTheme.accent.opacity(0.10) }
+        if isHovered { return LCTheme.fill }
+        return Color.clear
     }
 
     @ViewBuilder
