@@ -76,15 +76,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
-        guard let event = NSApp.currentEvent else {
-            togglePopover()
+        let event = NSApp.currentEvent
+        // Right-click or Control-click → context menu only (never open prefs by default).
+        if let event,
+           event.type == .rightMouseUp
+            || event.type == .rightMouseDown
+            || (event.type == .leftMouseUp && event.modifierFlags.contains(.control)) {
+            showContextMenu(with: event)
             return
         }
-        if event.type == .rightMouseUp {
-            showContextMenu(with: event)
-        } else {
-            togglePopover()
-        }
+        togglePopover()
     }
 
     private func showContextMenu(with event: NSEvent) {
@@ -122,10 +123,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         recheck.isEnabled = true
         menu.addItem(recheck)
 
+        // No keyEquivalent "," here — that is the system Preferences shortcut and can
+        // auto-fire when the context menu is shown (looks like "right-click opens prefs").
         let prefs = NSMenuItem(
             title: "偏好设置…",
             action: #selector(openAppSettings(_:)),
-            keyEquivalent: ","
+            keyEquivalent: ""
         )
         prefs.target = self
         prefs.isEnabled = true
@@ -160,10 +163,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        // Empty keyEquivalent: context menus should not steal ⌘Q / global shortcuts.
         let quitItem = NSMenuItem(
             title: "退出 LocalClip",
             action: #selector(quit(_:)),
-            keyEquivalent: "q"
+            keyEquivalent: ""
         )
         quitItem.target = self
         quitItem.isEnabled = true
@@ -247,8 +251,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc func checkForUpdates(_ sender: Any?) {
         model.checkForUpdates()
-        // Open prefs so the user sees the result.
-        openAppSettings(nil)
+        // Do not auto-open preferences here — right-click menu must only show the menu;
+        // user can open 偏好设置 explicitly if they want the full update UI.
+        model.statusMessage = model.updateCheckMessage ?? "正在检查更新…"
     }
 
     /// Opens app preferences (login item, privacy). Dedicated window — more reliable
