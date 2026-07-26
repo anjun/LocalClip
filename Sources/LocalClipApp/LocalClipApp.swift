@@ -11,7 +11,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         guard let model = AppDelegate.sharedModel else { return }
         model.start()
-        // Prefer AppKit status item (left panel / right menu) over MenuBarExtra.
         if AppDelegate.statusBar == nil {
             let bar = StatusBarController(model: model)
             bar.install()
@@ -48,104 +47,185 @@ struct LocalClipApp: App {
     }
 
     var body: some Scene {
-        // Settings window only; menu bar UI is AppKit StatusBarController.
         Settings {
             SettingsView()
                 .environmentObject(model)
-                .frame(width: 380, height: 280)
+                .frame(width: 400, height: 320)
         }
     }
 }
 
+// MARK: - History Panel
+
 struct HistoryPanel: View {
     @EnvironmentObject var model: AppModel
+    @State private var hoveredID: String?
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
+        ZStack {
+            LCTheme.panelBackground
+            VStack(spacing: 0) {
+                header
+                searchBar
+                statusStrip
+                content
+                footer
+            }
+        }
+        .frame(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
+        .preferredColorScheme(.dark)
+        .onAppear {
+            model.refresh()
+            model.refreshAccessibility()
+            model.frontmostTracker.observeFrontmost()
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 10) {
+            // Brand mark
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [LCTheme.ink, LCTheme.ink.opacity(0.65)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 28, height: 28)
+                    .shadow(color: LCTheme.ink.opacity(0.35), radius: 8, y: 2)
+                Image(systemName: "paperclip")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .rotationEffect(.degrees(-25))
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
                 Text("LocalClip")
-                    .font(.headline)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(LCTheme.textPrimary)
+                    .tracking(0.3)
+                Text("本地 · 零联网")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(LCTheme.textTertiary)
+            }
+
+            Spacer()
+
+            Toggle(isOn: $model.plainTextPaste) {
+                Text("纯文本")
+            }
+            .toggleStyle(LCChipToggleStyle())
+            .help("文本以纯文本粘贴；图片仍为图片")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+    }
+
+    // MARK: Search
+
+    private var searchBar: some View {
+        TextField("搜索剪贴记录…", text: $model.searchQuery)
+            .textFieldStyle(LCSearchFieldStyle())
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+    }
+
+    // MARK: Status
+
+    @ViewBuilder
+    private var statusStrip: some View {
+        if model.accessibilityTrusted {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(LCTheme.success)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: LCTheme.success.opacity(0.6), radius: 3)
+                Text("自动粘贴就绪")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(LCTheme.textSecondary)
                 Spacer()
-                Toggle("纯文本", isOn: $model.plainTextPaste)
-                    .toggleStyle(.checkbox)
-                    .help("文本以纯文本粘贴；图片仍粘贴图片")
+                if model.isMonitoring {
+                    Text("LIVE")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(LCTheme.success.opacity(0.9))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule().fill(LCTheme.success.opacity(0.12))
+                        )
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-
-            TextField("搜索文本…", text: $model.searchQuery)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
-
-            if model.accessibilityTrusted {
+            .padding(.horizontal, 18)
+            .padding(.bottom, 8)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(LCTheme.warning)
+                    Text("将尝试自动粘贴；若未贴上请 ⌘V")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(LCTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 6) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundStyle(.green)
-                    Text("辅助功能已生效 · 点选可自动粘贴")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 4)
-            } else {
-                // Soft notice: we still attempt auto-paste (ad-hoc trust API is flaky).
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "info.circle.fill")
-                            .foregroundStyle(.blue)
-                        Text("系统未回报「已信任」，但仍会尝试自动粘贴。若内容没贴上，请手动 ⌘V。")
-                            .font(.caption)
+                    Button("系统设置") {
+                        _ = AccessibilityPaste.isTrusted(prompt: true)
+                        AccessibilityPaste.openSystemSettings()
                     }
-                    Text("可选：系统设置中确认勾选 LocalClip 后点「退出并重新打开」。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        Button("打开系统设置…") {
-                            _ = AccessibilityPaste.isTrusted(prompt: true)
-                            AccessibilityPaste.openSystemSettings()
+                    Button("重检") { model.refreshAccessibility() }
+                    Button("重启 App") { AccessibilityPaste.relaunchCurrentApp() }
+                }
+                .buttonStyle(LCGhostButtonStyle())
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(LCTheme.warning.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(LCTheme.warning.opacity(0.18), lineWidth: 1)
+                    )
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
+
+        if let msg = model.statusMessage {
+            Text(msg)
+                .font(.system(size: 11, weight: .regular, design: .rounded))
+                .foregroundStyle(LCTheme.ink)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.opacity)
+        }
+    }
+
+    // MARK: Content
+
+    @ViewBuilder
+    private var content: some View {
+        if model.items.isEmpty {
+            emptyState
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                        HistoryRow(
+                            item: item,
+                            index: index,
+                            isHovered: hoveredID == item.id
+                        )
+                        .onHover { hovering in
+                            hoveredID = hovering ? item.id : (hoveredID == item.id ? nil : hoveredID)
                         }
-                        Button("重新检查") { model.refreshAccessibility() }
-                        Button("退出并重新打开") { AccessibilityPaste.relaunchCurrentApp() }
-                    }
-                    .font(.caption)
-                }
-                .padding(8)
-                .background(Color.blue.opacity(0.10))
-                .padding(.horizontal, 8)
-            }
-
-            if let msg = model.statusMessage {
-                Text(msg)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 4)
-            }
-
-            Divider()
-
-            if model.items.isEmpty {
-                VStack(spacing: 8) {
-                    Spacer()
-                    Image(systemName: "clipboard")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
-                    Text("暂无历史")
-                        .foregroundStyle(.secondary)
-                    Text("复制文本或图片后会出现在这里")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-            } else {
-                List(model.items) { item in
-                    HistoryRow(item: item)
-                        .contentShape(Rectangle())
                         .onTapGesture {
-                            // Close popover first so previous app can activate
                             AppDelegate.statusBar?.closePopover()
                             model.pasteItem(item)
                         }
@@ -156,100 +236,232 @@ struct HistoryPanel: View {
                             }
                             Button("删除", role: .destructive) { model.deleteItem(item) }
                         }
+                    }
                 }
-                .listStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
             }
+        }
+    }
 
-            Divider()
-            HStack {
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            ZStack {
+                Circle()
+                    .fill(LCTheme.inkSoft)
+                    .frame(width: 72, height: 72)
+                Image(systemName: "scissors")
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(LCTheme.ink)
+            }
+            VStack(spacing: 6) {
+                Text("还没有剪下的内容")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(LCTheme.textPrimary)
+                Text("复制文字或截图后，会出现在这里")
+                    .font(.system(size: 12, weight: .regular, design: .rounded))
+                    .foregroundStyle(LCTheme.textTertiary)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: Footer
+
+    private var footer: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(LCTheme.hairline)
+                .frame(height: 1)
+
+            HStack(spacing: 4) {
                 Button("清空") { model.clearHistory() }
+                    .buttonStyle(LCGhostButtonStyle(destructive: true))
+
                 Spacer()
-                Text("\(model.items.count) 条 · 本地 · 零联网")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if model.isMonitoring {
-                    Text("监听中")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
+
+                HStack(spacing: 6) {
+                    Text("\(model.items.count)")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(LCTheme.textPrimary)
+                    Text("条记录")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(LCTheme.textTertiary)
                 }
+                .padding(.horizontal, 8)
+
                 Button("刷新") { model.refresh() }
+                    .buttonStyle(LCGhostButtonStyle())
+
                 Button("退出") {
                     model.stop()
                     NSApp.terminate(nil)
                 }
-                .help("退出 LocalClip（菜单栏图标右键也可退出）")
+                .buttonStyle(LCGhostButtonStyle())
+                .help("也可右键菜单栏图标退出")
             }
-            .padding(8)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
         }
-        .onAppear {
-            model.refresh()
-            model.refreshAccessibility()
-            model.frontmostTracker.observeFrontmost()
-        }
+        .background(LCTheme.slate.opacity(0.5))
     }
 }
 
+// MARK: - Row
+
 struct HistoryRow: View {
     let item: ClipboardItem
+    let index: Int
+    var isHovered: Bool = false
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Group {
-                switch item.kind {
-                case .image:
-                    if let path = item.thumbPath ?? item.imagePath {
-                        let url = model.store.rootURL.appendingPathComponent(path)
-                        if let nsImage = NSImage(contentsOf: url) {
-                            Image(nsImage: nsImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 48, height: 48)
-                                .clipped()
-                                .cornerRadius(6)
-                        } else {
-                            placeholder(icon: "photo")
-                        }
-                    } else {
-                        placeholder(icon: "photo")
-                    }
-                case .text:
-                    placeholder(icon: "text.alignleft")
-                }
+        HStack(alignment: .center, spacing: 12) {
+            mediaThumb
+
+            VStack(alignment: .leading, spacing: 5) {
+                primaryLabel
+                metaLine
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                switch item.kind {
-                case .text:
-                    Text(item.textContent ?? "")
-                        .lineLimit(3)
-                        .font(.system(.body, design: .default))
-                case .image:
-                    Text("图片")
-                        .font(.body)
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(item.byteSize), countStyle: .file))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Text(item.createdAt, style: .relative)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
             Spacer(minLength: 0)
+
+            if isHovered {
+                Image(systemName: "return")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(LCTheme.ink)
+                    .padding(6)
+                    .background(Circle().fill(LCTheme.inkSoft))
+                    .transition(.scale.combined(with: .opacity))
+            }
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(rowBackground)
+        .overlay(alignment: .leading) {
+            // Signature: indigo ink rail
+            if isHovered {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(LCTheme.ink)
+                    .frame(width: 3)
+                    .padding(.vertical, 10)
+                    .padding(.leading, 3)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: isHovered)
+    }
+
+    @ViewBuilder
+    private var mediaThumb: some View {
+        switch item.kind {
+        case .image:
+            if let path = item.thumbPath ?? item.imagePath {
+                let url = model.store.rootURL.appendingPathComponent(path)
+                if let nsImage = NSImage(contentsOf: url) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 44, height: 44)
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .strokeBorder(LCTheme.hairline, lineWidth: 1)
+                        )
+                } else {
+                    placeholder(icon: "photo")
+                }
+            } else {
+                placeholder(icon: "photo")
+            }
+        case .text:
+            placeholder(icon: "text.alignleft")
+        }
+    }
+
+    @ViewBuilder
+    private var primaryLabel: some View {
+        switch item.kind {
+        case .text:
+            Text(item.textContent ?? "")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(LCTheme.textPrimary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+        case .image:
+            Text("图片")
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(LCTheme.textPrimary)
+        }
+    }
+
+    private var metaLine: some View {
+        HStack(spacing: 8) {
+            Text(kindTag)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(LCTheme.ink)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(LCTheme.inkSoft)
+                )
+
+            Text(relativeTime)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(LCTheme.textTertiary)
+
+            if item.kind == .image {
+                Text(ByteCountFormatter.string(fromByteCount: Int64(item.byteSize), countStyle: .file))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(LCTheme.textTertiary)
+            }
+        }
+    }
+
+    private var kindTag: String {
+        item.kind == .image ? "IMG" : "TXT"
+    }
+
+    private var relativeTime: String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f.localizedString(for: item.createdAt, relativeTo: Date())
+    }
+
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: LCTheme.rowRadius, style: .continuous)
+            .fill(isHovered ? LCTheme.slateElevated : LCTheme.mist)
+            .overlay(
+                RoundedRectangle(cornerRadius: LCTheme.rowRadius, style: .continuous)
+                    .strokeBorder(isHovered ? LCTheme.ink.opacity(0.22) : LCTheme.hairline, lineWidth: 1)
+            )
     }
 
     private func placeholder(icon: String) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.secondary.opacity(0.12))
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [LCTheme.slateElevated, LCTheme.mist],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
             Image(systemName: icon)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(LCTheme.textSecondary)
         }
-        .frame(width: 48, height: 48)
+        .frame(width: 44, height: 44)
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(LCTheme.hairline, lineWidth: 1)
+        )
     }
 }
+
+// MARK: - Settings
 
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
@@ -258,7 +470,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("隐私") {
-                Text("所有历史仅保存在本机 Application Support/LocalClip。无网络、无分析、无同步。")
+                Text("历史仅保存在本机 Application Support/LocalClip。无网络、无分析、无同步。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -271,7 +483,7 @@ struct SettingsView: View {
             }
             Section("权限") {
                 HStack {
-                    Text(model.accessibilityTrusted ? "辅助功能：已信任" : "辅助功能：未信任")
+                    Text(model.accessibilityTrusted ? "辅助功能：已信任" : "辅助功能：检测未信任（仍尝试粘贴）")
                     Spacer()
                     Button("检查") { model.refreshAccessibility() }
                     Button("系统设置…") {
@@ -279,10 +491,8 @@ struct SettingsView: View {
                         AccessibilityPaste.openSystemSettings()
                     }
                 }
-                if !model.accessibilityTrusted {
-                    Button("退出并重新打开以刷新权限") {
-                        AccessibilityPaste.relaunchCurrentApp()
-                    }
+                Button("退出并重新打开") {
+                    AccessibilityPaste.relaunchCurrentApp()
                 }
             }
             Section("保留") {

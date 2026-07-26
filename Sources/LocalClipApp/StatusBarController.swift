@@ -29,12 +29,21 @@ final class StatusBarController: NSObject {
         let pop = NSPopover()
         pop.behavior = .transient
         pop.animates = true
-        pop.contentSize = NSSize(width: 360, height: 500)
-        pop.contentViewController = NSHostingController(
+        pop.contentSize = NSSize(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
+        let host = NSHostingController(
             rootView: HistoryPanel()
                 .environmentObject(model)
-                .frame(width: 360, height: 500)
+                .frame(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
         )
+        // Dark vibrant material under SwiftUI content
+        if #available(macOS 10.14, *) {
+            let visual = NSVisualEffectView()
+            visual.material = .hudWindow
+            visual.blendingMode = .behindWindow
+            visual.state = .active
+            host.view.wantsLayer = true
+        }
+        pop.contentViewController = host
         popover = pop
 
         // Re-check Accessibility while untrusted (TCC can lag; also after user returns from Settings).
