@@ -12,6 +12,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var permissionTimer: Timer?
     /// Keep menu alive while open (status-item menu=nil hack used to drop actions).
     private var activeContextMenu: NSMenu?
+    /// Owned prefs window — SwiftUI Settings scene is unreliable for LSUIElement apps.
+    private var preferencesWindow: NSWindow?
 
     init(model: AppModel) {
         self.model = model
@@ -180,8 +182,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             popover.performClose(nil)
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            // Activate + key window so local key monitors receive ↑/↓/Return.
             NSApp.activate(ignoringOtherApps: true)
+            if let win = popover.contentViewController?.view.window {
+                win.makeKey()
+                // Don't leave focus stuck in the search field only — still allow typing,
+                // but key router intercepts arrows/return regardless of first responder.
+                win.makeFirstResponder(popover.contentViewController?.view)
+            }
         }
     }
 
@@ -228,18 +236,29 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
     }
 
-    /// Opens SwiftUI Settings scene (login item, privacy copy) — not system Accessibility.
+    /// Opens app preferences (login item, privacy). Dedicated window — more reliable
+    /// than `showSettingsWindow:` for LSUIElement / menu-bar-only apps.
     @objc func openAppSettings(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
-        // SwiftUI Settings / legacy Preferences selector (macOS 13+).
+        if preferencesWindow == nil {
+            let host = NSHostingController(
+                rootView: SettingsView()
+                    .environmentObject(model)
+                    .frame(minWidth: 400, minHeight: 320)
+            )
+            let window = NSWindow(contentViewController: host)
+            window.title = "LocalClip 偏好设置"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.setContentSize(NSSize(width: 420, height: 360))
+            window.isReleasedWhenClosed = false
+            window.center()
+            preferencesWindow = window
+        }
+        preferencesWindow?.makeKeyAndOrderFront(nil)
+        // Also try system Settings scene for apps that support it (no-op if missing).
         let settingsSel = Selector(("showSettingsWindow:"))
-        let prefsSel = Selector(("showPreferencesWindow:"))
         if NSApp.responds(to: settingsSel) {
             NSApp.sendAction(settingsSel, to: nil, from: nil)
-        } else if NSApp.responds(to: prefsSel) {
-            NSApp.sendAction(prefsSel, to: nil, from: nil)
-        } else {
-            model.statusMessage = "无法打开偏好设置窗口"
         }
     }
 

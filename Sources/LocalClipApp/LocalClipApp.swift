@@ -69,23 +69,22 @@ struct LocalClipApp: App {
 
 // MARK: - Keyboard router (panel)
 
-/// Routes ↑/↓/Return while panel is key; ignores events when a text field is focused.
+/// Routes ↑/↓/Return for the history list.
+/// Always intercepts navigation keys (search field must not swallow ↑/↓/Return —
+/// that was why keyboard paste appeared dead). Other keys still reach the search field.
 enum HistoryPanelKeyRouter {
+    /// keyCode: 125 ↓, 126 ↑, 36 return, 76 keypad enter
     static func handle(_ event: NSEvent) -> NSEvent? {
-        if let first = NSApp.keyWindow?.firstResponder,
-           first is NSTextView || first is NSTextField {
-            return event
-        }
         guard let model = AppDelegate.sharedModel else { return event }
         switch event.keyCode {
         case 125: // down arrow
-            Task { @MainActor in model.moveSelection(delta: 1) }
+            DispatchQueue.main.async { model.moveSelection(delta: 1) }
             return nil
         case 126: // up arrow
-            Task { @MainActor in model.moveSelection(delta: -1) }
+            DispatchQueue.main.async { model.moveSelection(delta: -1) }
             return nil
-        case 36, 76: // return / enter
-            Task { @MainActor in model.pasteSelectedItem() }
+        case 36, 76: // return / enter → same paste path as click
+            DispatchQueue.main.async { model.pasteSelectedItem() }
             return nil
         default:
             return event
