@@ -242,7 +242,6 @@ struct HistoryPanel: View {
                 }
                 HStack(spacing: 6) {
                     Button("系统设置") {
-                        _ = AccessibilityPaste.isTrusted(prompt: true)
                         AccessibilityPaste.openSystemSettings()
                     }
                     Button("重检") { model.refreshAccessibility() }
@@ -804,7 +803,6 @@ struct SettingsView: View {
                     model.refreshAccessibility()
                 }
                 settingsSecondaryButton(title: "打开系统辅助功能设置", systemImage: "gearshape") {
-                    _ = AccessibilityPaste.isTrusted(prompt: true)
                     AccessibilityPaste.openSystemSettings()
                 }
                 settingsSecondaryButton(title: "退出并重新打开（刷新权限）", systemImage: "arrow.triangle.2.circlepath") {

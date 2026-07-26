@@ -188,7 +188,8 @@ public final class AppModel: ObservableObject {
     }
 
     public func requestAccessibility() {
-        _ = AccessibilityPaste.isTrusted(prompt: true)
+        // Only open System Settings — do not call isTrusted(prompt: true), which shows a
+        // redundant system AX dialog on top of Settings (and its close button is awkward).
         AccessibilityPaste.openSystemSettings()
         refreshAccessibility()
         if !accessibilityTrusted {

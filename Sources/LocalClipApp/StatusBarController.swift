@@ -280,7 +280,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc func openAccessibilitySettings(_ sender: Any?) {
-        _ = AccessibilityPaste.isTrusted(prompt: true)
+        // Open Settings only — no AX prompt dialog (redundant with Settings list).
         AccessibilityPaste.openSystemSettings()
         model.refreshAccessibility()
     }
