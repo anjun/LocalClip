@@ -60,17 +60,12 @@ ver_gt() {
 bump_patch() {
   local v
   v="$(normalize_ver "$1")"
-  local major minor patch
-  IFS=. read -r major minor patch <<<"${v}.0.0"
-  major="${major:-0}"
-  minor="${minor:-0}"
-  patch="${patch:-0}"
-  major="${major//[^0-9]/}"
-  minor="${minor//[^0-9]/}"
-  patch="${patch//[^0-9]/}"
-  major="${major:-0}"
-  minor="${minor:-0}"
-  patch="${patch:-0}"
+  # Take at most major.minor.patch (ignore extra segments / junk)
+  local major minor patch rest
+  IFS=. read -r major minor patch rest <<<"${v}"
+  major="${major//[^0-9]/}"; major="${major:-0}"
+  minor="${minor//[^0-9]/}"; minor="${minor:-0}"
+  patch="${patch//[^0-9]/}"; patch="${patch:-0}"
   patch=$((10#$patch + 1))
   echo "${major}.${minor}.${patch}"
 }
