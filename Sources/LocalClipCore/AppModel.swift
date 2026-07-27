@@ -31,6 +31,7 @@ public final class AppModel: ObservableObject {
     @Published public var updateZipURL: URL?
     @Published public private(set) var isCheckingUpdate: Bool = false
     @Published public private(set) var isInstallingUpdate: Bool = false
+    @Published public private(set) var isUpdatingRetention = false
     /// 0...1 for determinate progress; nil means indeterminate (use with ProgressView).
     @Published public private(set) var updateProgress: Double?
     /// Last successful check payload (for install).
@@ -45,6 +46,7 @@ public final class AppModel: ObservableObject {
     private var pasteService: PasteService!
     private let systemPasteboard = SystemPasteboard()
     private let defaultsKey = "LocalClip.AppSettings.v1"
+    private let userDefaults: UserDefaults
     /// Debounce for search box. Overridable in tests.
     public var searchDebounceNanoseconds: UInt64 = 160_000_000
     /// GCD work item — more reliable under CLI/CI run loops than nested Task.sleep.
@@ -52,14 +54,18 @@ public final class AppModel: ObservableObject {
     /// Bumped on every load start / sync refresh so stale async results are dropped.
     private var itemsLoadGeneration: UInt64 = 0
 
-    public init(storeRoot: URL? = nil) throws {
+    public init(
+        storeRoot: URL? = nil,
+        userDefaults: UserDefaults = .standard
+    ) throws {
         let root = storeRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LocalClip", isDirectory: true)
         var loaded = AppSettings.default
-        if let data = UserDefaults.standard.data(forKey: defaultsKey),
+        if let data = userDefaults.data(forKey: defaultsKey),
            let decoded = try? JSONDecoder().decode(CodableSettings.self, from: data) {
             loaded = decoded.settings
         }
+        self.userDefaults = userDefaults
         self.settings = loaded
         self.plainTextPaste = loaded.plainTextPaste
         self.store = try ClipboardStore(rootURL: root, settings: loaded)
@@ -337,9 +343,42 @@ public final class AppModel: ObservableObject {
     private func persistSettings() {
         let box = CodableSettings(settings: settings)
         if let data = try? JSONEncoder().encode(box) {
-            UserDefaults.standard.set(data, forKey: defaultsKey)
+            userDefaults.set(data, forKey: defaultsKey)
         }
         store.updateSettings(settings)
+    }
+
+    public func updateRetention(maxItems: Int, maxAgeDays: Int) async -> Bool {
+        guard !isUpdatingRetention else { return false }
+        guard AppSettings.isValidRetention(maxItems: maxItems, maxAgeDays: maxAgeDays) else {
+            return false
+        }
+
+        let isReduction = AppSettings.isRetentionReduction(
+            fromMaxItems: settings.maxItems,
+            fromMaxAgeDays: settings.maxAgeDays,
+            toMaxItems: maxItems,
+            toMaxAgeDays: maxAgeDays
+        )
+        settings.maxItems = maxItems
+        settings.maxAgeDays = maxAgeDays
+        persistSettings()
+
+        guard isReduction else { return true }
+
+        isUpdatingRetention = true
+        defer { isUpdatingRetention = false }
+        let store = self.store
+        do {
+            try await Task.detached(priority: .utility) {
+                try store.prune()
+            }.value
+            refresh()
+            return true
+        } catch {
+            statusMessage = "清理历史记录失败：\(error.localizedDescription)"
+            return false
+        }
     }
 
     public func registerLoginItem(enabled: Bool) {

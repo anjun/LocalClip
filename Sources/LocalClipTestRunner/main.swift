@@ -16,6 +16,7 @@ struct LocalClipTestRunner {
         runHasherAndOrdering()
         runSelectionTests()
         runUpdateCheckerTests()
+        runAppModelRetentionTests()
         runAppModelSearchTests()
         if failures == 0 {
             print("ALL TESTS PASSED")
@@ -424,6 +425,117 @@ struct LocalClipTestRunner {
         let found = UpdateChecker.findAppBundle(in: work)
         expect(found?.lastPathComponent == "LocalClip.app", "findAppBundle locates app")
         try? FileManager.default.removeItem(at: work)
+    }
+
+    static func runAppModelRetentionTests() {
+        print("--- appmodel retention update ---")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LC-retention-\(UUID().uuidString)", isDirectory: true)
+        let suiteName = "LocalClipTests.Retention.\(UUID().uuidString)"
+        guard let initialDefaults = UserDefaults(suiteName: suiteName) else {
+            expect(false, "appmodel retention defaults suite created")
+            return
+        }
+        initialDefaults.removePersistentDomain(forName: suiteName)
+        defer {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        final class State: @unchecked Sendable {
+            var setupError: String?
+            var finished = false
+        }
+        let state = State()
+
+        DispatchQueue.main.async {
+            Task { @MainActor in
+                guard let userDefaults = UserDefaults(suiteName: suiteName) else {
+                    state.setupError = "could not recreate defaults suite"
+                    state.finished = true
+                    return
+                }
+                do {
+                    let model = try AppModel(storeRoot: root, userDefaults: userDefaults)
+                    _ = try model.store.insertText("retention-one")
+                    _ = try model.store.insertText("retention-two")
+                    _ = try model.store.insertText("retention-three")
+                    model.refresh()
+                    expect(model.items.count == 3, "retention test seeds three model items")
+
+                    let updated = await model.updateRetention(maxItems: 2, maxAgeDays: 0)
+                    expect(updated, "valid retention update succeeds")
+                    expect(
+                        model.settings.maxItems == 2 && model.settings.maxAgeDays == 0,
+                        "model retention settings update to 2/0"
+                    )
+                    expect(
+                        model.store.settings.maxItems == 2 && model.store.settings.maxAgeDays == 0,
+                        "store retention settings update to 2/0"
+                    )
+                    expect(model.items.count == 2, "reduction immediately refreshes model to two items")
+                    expect(try model.store.allItems().count == 2, "reduction immediately prunes SQLite to two rows")
+                    expect(!model.isUpdatingRetention, "retention update state resets after pruning")
+
+                    let restored = try AppModel(storeRoot: root, userDefaults: userDefaults)
+                    expect(
+                        restored.settings.maxItems == 2 && restored.settings.maxAgeDays == 0,
+                        "new model restores persisted retention settings"
+                    )
+
+                    let rejected = await restored.updateRetention(maxItems: 0, maxAgeDays: 7)
+                    expect(!rejected, "invalid retention update is rejected")
+                    expect(
+                        restored.settings.maxItems == 2 && restored.settings.maxAgeDays == 0,
+                        "invalid retention update preserves model settings"
+                    )
+                    expect(
+                        restored.store.settings.maxItems == 2 && restored.store.settings.maxAgeDays == 0,
+                        "invalid retention update preserves store settings"
+                    )
+
+                    restored.store.pruneExecutor = { _ in }
+                    for index in 0..<500 {
+                        _ = try restored.store.insertText("overlap-\(index)")
+                    }
+                    let firstUpdate = Task { @MainActor in
+                        await restored.updateRetention(maxItems: 1, maxAgeDays: 0)
+                    }
+                    var observedUpdating = false
+                    for _ in 0..<10_000 {
+                        if restored.isUpdatingRetention {
+                            observedUpdating = true
+                            break
+                        }
+                        await Task.yield()
+                    }
+                    expect(observedUpdating, "first retention reduction enters updating state")
+
+                    let overlapping = await restored.updateRetention(maxItems: 2, maxAgeDays: 0)
+                    expect(!overlapping, "overlapping retention update is rejected")
+                    expect(await firstUpdate.value, "first overlapping retention update succeeds")
+                    expect(
+                        restored.settings.maxItems == 1 && restored.settings.maxAgeDays == 0,
+                        "rejected overlapping update cannot overwrite active retention settings"
+                    )
+                    expect(!restored.isUpdatingRetention, "updating state resets after overlap rejection")
+                } catch {
+                    state.setupError = "\(error)"
+                }
+                state.finished = true
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(5)
+        while !state.finished, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        if let error = state.setupError {
+            failures += 1
+            print("FAIL appmodel retention setup: \(error)")
+        } else if !state.finished {
+            expect(false, "appmodel retention async test completed")
+        }
     }
 
     /// Search box must not run a synchronous full refresh on every keystroke / IME update.
