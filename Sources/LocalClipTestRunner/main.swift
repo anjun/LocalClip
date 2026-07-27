@@ -349,12 +349,24 @@ struct LocalClipTestRunner {
 
             let validOrphanURL = store.imagesURL.appendingPathComponent("valid-orphan.png")
             try Data("valid orphan".utf8).write(to: validOrphanURL)
+            let doubledSeparatorURL = store.imagesURL.appendingPathComponent("doubled-separator.png")
+            try Data("doubled separator sentinel".utf8).write(to: doubledSeparatorURL)
+            let currentComponentURL = store.imagesURL.appendingPathComponent("current-component.png")
+            try Data("current component sentinel".utf8).write(to: currentComponentURL)
             let controlledButInvalidURL = root.appendingPathComponent("not-an-asset.txt")
             try Data("controlled sentinel".utf8).write(to: controlledButInvalidURL)
             let nestedDirectoryURL = store.imagesURL.appendingPathComponent("nested", isDirectory: true)
             try fileManager.createDirectory(at: nestedDirectoryURL, withIntermediateDirectories: false)
             let nestedAssetURL = nestedDirectoryURL.appendingPathComponent("nested.png")
             try Data("nested sentinel".utf8).write(to: nestedAssetURL)
+            let unknownParentURL = root
+                .appendingPathComponent("other", isDirectory: true)
+                .appendingPathComponent("unknown-parent.txt")
+            try fileManager.createDirectory(
+                at: unknownParentURL.deletingLastPathComponent(),
+                withIntermediateDirectories: false
+            )
+            try Data("unknown parent sentinel".utf8).write(to: unknownParentURL)
 
             var pathDB: OpaquePointer?
             let databasePath = root.appendingPathComponent("db.sqlite").path
@@ -368,11 +380,11 @@ struct LocalClipTestRunner {
                 "../\(outsideSentinelURL.lastPathComponent)",
                 outsideSentinelURL.path,
                 "images/",
-                "images//valid-orphan.png",
-                "images/./valid-orphan.png",
+                "images//doubled-separator.png",
+                "images/./current-component.png",
                 "images/../not-an-asset.txt",
                 "images/nested/nested.png",
-                "other/file.txt"
+                "other/unknown-parent.txt"
             ]
             for path in invalidPaths {
                 try executeSQL(
@@ -402,12 +414,82 @@ struct LocalClipTestRunner {
                 "invalid manifest path with extra components cannot delete a nested asset"
             )
             expect(
+                fileManager.fileExists(atPath: doubledSeparatorURL.path),
+                "invalid manifest doubled separator cannot delete its independently observed prefix"
+            )
+            expect(
+                fileManager.fileExists(atPath: currentComponentURL.path),
+                "invalid manifest current component cannot delete its independently observed prefix"
+            )
+            expect(
+                fileManager.fileExists(atPath: unknownParentURL.path),
+                "invalid manifest unknown parent cannot delete its independently observed file"
+            )
+            expect(
                 !fileManager.fileExists(atPath: validOrphanURL.path),
                 "valid manifest image path still removes the referenced asset"
             )
             expect(
                 try queryInt(pathDB, "SELECT COUNT(*) FROM pending_asset_deletions;") == 0,
                 "invalid manifest paths are discarded instead of retried"
+            )
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let nulPrefixURL = store.imagesURL.appendingPathComponent("nul-prefix.png")
+            try Data("NUL prefix sentinel".utf8).write(to: nulPrefixURL)
+            let invalidUTF8PrefixURL = store.imagesURL.appendingPathComponent("invalid-utf8-prefix.png")
+            try Data("invalid UTF-8 prefix sentinel".utf8).write(to: invalidUTF8PrefixURL)
+            let validOrphanURL = store.imagesURL.appendingPathComponent("round-one-valid.png")
+            try Data("round one valid orphan".utf8).write(to: validOrphanURL)
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "raw manifest path test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+            try executeSQL(
+                pathDB,
+                """
+                INSERT INTO pending_asset_deletions (path)
+                VALUES ('images/nul-prefix.png' || char(0));
+                """
+            )
+            let invalidUTF8Bytes = Array("images/invalid-utf8-prefix.png".utf8) + [0xff]
+            let invalidUTF8Hex = invalidUTF8Bytes.map { String(format: "%02x", $0) }.joined()
+            try executeSQL(
+                pathDB,
+                """
+                INSERT INTO pending_asset_deletions (path)
+                VALUES (CAST(X'\(invalidUTF8Hex)' AS TEXT));
+                """
+            )
+            try executeSQL(
+                pathDB,
+                "INSERT INTO pending_asset_deletions (path) VALUES (?);",
+                bindings: ["images/round-one-valid.png"]
+            )
+
+            try store.prune()
+
+            expect(
+                fileManager.fileExists(atPath: nulPrefixURL.path),
+                "embedded-NUL manifest path cannot delete its valid prefix asset"
+            )
+            expect(
+                fileManager.fileExists(atPath: invalidUTF8PrefixURL.path),
+                "invalid-UTF8 manifest path cannot delete or alias its valid prefix asset"
+            )
+            expect(
+                !fileManager.fileExists(atPath: validOrphanURL.path),
+                "valid manifest cleanup remains enabled beside raw invalid paths"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM pending_asset_deletions;") == 0,
+                "embedded-NUL and invalid-UTF8 manifest rows are discarded by exact identity"
             )
         }
 
@@ -516,6 +598,77 @@ struct LocalClipTestRunner {
             expect(
                 !fileManager.fileExists(atPath: originalThumbURL.path),
                 "valid thumbnail path from a corrupt item still cleans up normally"
+            )
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let nulItem = try store.insertImage(data: uniquePNG(11))!
+            let invalidUTF8Item = try store.insertImage(data: uniquePNG(12))!
+            let protectedURLs = [
+                root.appendingPathComponent(nulItem.imagePath!),
+                root.appendingPathComponent(nulItem.thumbPath!),
+                root.appendingPathComponent(invalidUTF8Item.imagePath!),
+                root.appendingPathComponent(invalidUTF8Item.thumbPath!)
+            ]
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "raw corrupt item path test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+            try executeSQL(
+                pathDB,
+                """
+                UPDATE items
+                SET image_path = image_path || char(0),
+                    thumb_path = thumb_path || char(0)
+                WHERE id = ?;
+                """,
+                bindings: [nulItem.id]
+            )
+            try executeSQL(
+                pathDB,
+                """
+                UPDATE items
+                SET image_path = image_path || CAST(X'ff' AS TEXT),
+                    thumb_path = thumb_path || CAST(X'ff' AS TEXT)
+                WHERE id = ?;
+                """,
+                bindings: [invalidUTF8Item.id]
+            )
+            try executeSQL(pathDB, "CREATE TABLE raw_asset_enqueue_audit (path);")
+            try executeSQL(
+                pathDB,
+                """
+                CREATE TRIGGER audit_raw_asset_enqueue
+                AFTER INSERT ON pending_asset_deletions
+                BEGIN
+                  INSERT INTO raw_asset_enqueue_audit (path) VALUES (NEW.path);
+                END;
+                """
+            )
+
+            try store.delete(id: nulItem.id)
+            try store.delete(id: invalidUTF8Item.id)
+
+            expect(
+                try store.item(id: nulItem.id) == nil && store.item(id: invalidUTF8Item.id) == nil,
+                "items with raw invalid image and thumbnail paths are still deleted"
+            )
+            expect(
+                protectedURLs.allSatisfy { fileManager.fileExists(atPath: $0.path) },
+                "embedded-NUL and invalid-UTF8 item paths cannot delete valid prefix image/thumb assets"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM raw_asset_enqueue_audit;") == 0,
+                "raw invalid item image and thumbnail paths are rejected before manifest insertion"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM pending_asset_deletions;") == 0,
+                "raw invalid item paths create no pending manifest rows"
             )
         }
 

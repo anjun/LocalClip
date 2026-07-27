@@ -435,20 +435,24 @@ public final class ClipboardStore: @unchecked Sendable {
     }
 
     private func retryPendingAssetCleanupLocked() {
-        let paths: [String]
+        let deletions: [PendingAssetDeletion]
         do {
-            paths = try fetchPendingAssetDeletionPathsLocked()
+            deletions = try fetchPendingAssetDeletionsLocked()
         } catch {
             NSLog("LocalClip pending asset cleanup skipped: \(error)")
             return
         }
 
-        for path in paths {
-            guard let url = controlledAssetURL(for: path) else {
+        for deletion in deletions {
+            guard let path = deletion.path,
+                  let url = controlledAssetURL(for: path) else {
                 do {
-                    try removePendingAssetDeletionLocked(path)
+                    try removePendingAssetDeletionLocked(rowID: deletion.rowID)
                 } catch {
-                    NSLog("LocalClip invalid pending asset cleanup completion failed for \(path): \(error)")
+                    NSLog(
+                        "LocalClip invalid pending asset cleanup completion failed "
+                            + "for row \(deletion.rowID): \(error)"
+                    )
                 }
                 continue
             }
@@ -461,7 +465,7 @@ public final class ClipboardStore: @unchecked Sendable {
                 }
             }
             do {
-                try removePendingAssetDeletionLocked(path)
+                try removePendingAssetDeletionLocked(rowID: deletion.rowID)
             } catch {
                 NSLog("LocalClip pending asset cleanup completion failed for \(path): \(error)")
             }
@@ -469,7 +473,10 @@ public final class ClipboardStore: @unchecked Sendable {
     }
 
     private func controlledAssetURL(for path: String) -> URL? {
-        guard !(path as NSString).isAbsolutePath else { return nil }
+        guard !path.utf8.contains(0),
+              !(path as NSString).isAbsolutePath else {
+            return nil
+        }
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         guard components.count == 2,
               components[0] == "images" || components[0] == "thumbs",
@@ -499,37 +506,43 @@ public final class ClipboardStore: @unchecked Sendable {
         return requestedParent.appendingPathComponent(String(components[1]))
     }
 
-    private func fetchPendingAssetDeletionPathsLocked() throws -> [String] {
-        let sql = "SELECT path FROM pending_asset_deletions ORDER BY path;"
+    private struct PendingAssetDeletion {
+        let rowID: Int64
+        let path: String?
+    }
+
+    private func fetchPendingAssetDeletionsLocked() throws -> [PendingAssetDeletion] {
+        let sql = "SELECT rowid, path FROM pending_asset_deletions ORDER BY rowid;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             throw ClipboardStoreError.execFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
 
-        var paths: [String] = []
+        var deletions: [PendingAssetDeletion] = []
         while true {
             switch sqlite3_step(stmt) {
             case SQLITE_ROW:
-                if let value = sqlite3_column_text(stmt, 0) {
-                    paths.append(String(cString: value))
-                }
+                deletions.append(PendingAssetDeletion(
+                    rowID: sqlite3_column_int64(stmt, 0),
+                    path: strictTextColumn(stmt, 1)
+                ))
             case SQLITE_DONE:
-                return paths
+                return deletions
             default:
                 throw ClipboardStoreError.execFailed(lastError())
             }
         }
     }
 
-    private func removePendingAssetDeletionLocked(_ path: String) throws {
-        let sql = "DELETE FROM pending_asset_deletions WHERE path = ?;"
+    private func removePendingAssetDeletionLocked(rowID: Int64) throws {
+        let sql = "DELETE FROM pending_asset_deletions WHERE rowid = ?;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             throw ClipboardStoreError.execFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, path)
+        sqlite3_bind_int64(stmt, 1, rowID)
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw ClipboardStoreError.execFailed(lastError())
         }
@@ -594,8 +607,7 @@ public final class ClipboardStore: @unchecked Sendable {
 
     private func rowToItem(_ stmt: OpaquePointer?) -> ClipboardItem {
         func colText(_ i: Int32) -> String? {
-            guard let c = sqlite3_column_text(stmt, i) else { return nil }
-            return String(cString: c)
+            strictTextColumn(stmt, i)
         }
         let id = colText(0) ?? UUID().uuidString
         let kind = ClipboardItemKind(rawValue: colText(1) ?? "text") ?? .text
@@ -616,6 +628,17 @@ public final class ClipboardStore: @unchecked Sendable {
             thumbPath: thumbPath,
             sourceBundleId: source,
             byteSize: size
+        )
+    }
+
+    private func strictTextColumn(_ stmt: OpaquePointer?, _ index: Int32) -> String? {
+        guard sqlite3_column_type(stmt, index) != SQLITE_NULL else { return nil }
+        guard let bytes = sqlite3_column_text(stmt, index) else { return nil }
+        let byteCount = Int(sqlite3_column_bytes(stmt, index))
+        guard byteCount > 0 else { return "" }
+        return String(
+            bytes: UnsafeBufferPointer(start: bytes, count: byteCount),
+            encoding: .utf8
         )
     }
 
