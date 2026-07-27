@@ -61,9 +61,32 @@ public final class AppModel: ObservableObject {
         let root = storeRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LocalClip", isDirectory: true)
         var loaded = AppSettings.default
+        var shouldRewriteSettings = false
         if let data = userDefaults.data(forKey: defaultsKey),
            let decoded = try? JSONDecoder().decode(CodableSettings.self, from: data) {
             loaded = decoded.settings
+            if !AppSettings.isValidRetention(
+                maxItems: loaded.maxItems,
+                maxAgeDays: loaded.maxAgeDays
+            ) {
+                if !AppSettings.isValidRetention(
+                    maxItems: loaded.maxItems,
+                    maxAgeDays: AppSettings.default.maxAgeDays
+                ) {
+                    loaded.maxItems = AppSettings.default.maxItems
+                }
+                if !AppSettings.isValidRetention(
+                    maxItems: AppSettings.default.maxItems,
+                    maxAgeDays: loaded.maxAgeDays
+                ) {
+                    loaded.maxAgeDays = AppSettings.default.maxAgeDays
+                }
+                shouldRewriteSettings = true
+            }
+        }
+        if shouldRewriteSettings,
+           let sanitized = try? JSONEncoder().encode(CodableSettings(settings: loaded)) {
+            userDefaults.set(sanitized, forKey: defaultsKey)
         }
         self.userDefaults = userDefaults
         self.settings = loaded

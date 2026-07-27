@@ -1,6 +1,14 @@
 import Foundation
 import LocalClipCore
 
+private struct PersistedSettingsFixture: Codable {
+    var pollIntervalMs: Int
+    var maxItems: Int
+    var maxAgeDays: Int
+    var plainTextPaste: Bool
+    var launchAtLogin: Bool
+}
+
 // Lightweight test runner (no XCTest — works with Command Line Tools only).
 // Exercises shipped LocalClipCore types only.
 
@@ -456,7 +464,104 @@ struct LocalClipTestRunner {
                     return
                 }
                 do {
+                    let defaultsKey = "LocalClip.AppSettings.v1"
+                    let invalidPersisted = PersistedSettingsFixture(
+                        pollIntervalMs: 725,
+                        maxItems: 0,
+                        maxAgeDays: 23,
+                        plainTextPaste: true,
+                        launchAtLogin: false
+                    )
+                    userDefaults.set(
+                        try JSONEncoder().encode(invalidPersisted),
+                        forKey: defaultsKey
+                    )
+                    let sanitized = try AppModel(storeRoot: root, userDefaults: userDefaults)
+                    expect(
+                        sanitized.settings.maxItems == 200
+                            && sanitized.settings.maxAgeDays == 23,
+                        "invalid persisted item limit is sanitized without replacing valid non-preset age"
+                    )
+                    expect(
+                        sanitized.store.settings.maxItems == 200
+                            && sanitized.store.settings.maxAgeDays == 23,
+                        "store is constructed with sanitized retention"
+                    )
+                    expect(
+                        sanitized.settings.pollIntervalMs == 725
+                            && sanitized.settings.plainTextPaste
+                            && !sanitized.settings.launchAtLogin,
+                        "sanitizing retention preserves unrelated persisted settings"
+                    )
+                    let rewrittenData = userDefaults.data(forKey: defaultsKey)
+                    let rewritten = try rewrittenData.map {
+                        try JSONDecoder().decode(PersistedSettingsFixture.self, from: $0)
+                    }
+                    expect(
+                        rewritten?.maxItems == 200 && rewritten?.maxAgeDays == 23,
+                        "sanitized retention is rewritten to defaults"
+                    )
+                    expect(
+                        rewritten?.pollIntervalMs == 725
+                            && rewritten?.plainTextPaste == true
+                            && rewritten?.launchAtLogin == false,
+                        "rewritten defaults preserve unrelated settings"
+                    )
+
+                    let invalidAgePersisted = PersistedSettingsFixture(
+                        pollIntervalMs: 725,
+                        maxItems: 321,
+                        maxAgeDays: -1,
+                        plainTextPaste: true,
+                        launchAtLogin: false
+                    )
+                    userDefaults.set(
+                        try JSONEncoder().encode(invalidAgePersisted),
+                        forKey: defaultsKey
+                    )
+                    let ageSanitized = try AppModel(storeRoot: root, userDefaults: userDefaults)
+                    expect(
+                        ageSanitized.settings.maxItems == 321
+                            && ageSanitized.settings.maxAgeDays == 7,
+                        "invalid persisted age is sanitized without replacing valid non-preset item limit"
+                    )
+                    expect(
+                        ageSanitized.store.settings.maxItems == 321
+                            && ageSanitized.store.settings.maxAgeDays == 7,
+                        "store is constructed with sanitized age"
+                    )
+                    expect(
+                        ageSanitized.settings.pollIntervalMs == 725
+                            && ageSanitized.settings.plainTextPaste
+                            && !ageSanitized.settings.launchAtLogin,
+                        "sanitizing age preserves unrelated persisted settings"
+                    )
+                    let rewrittenAgeData = userDefaults.data(forKey: defaultsKey)
+                    let rewrittenAge = try rewrittenAgeData.map {
+                        try JSONDecoder().decode(PersistedSettingsFixture.self, from: $0)
+                    }
+                    expect(
+                        rewrittenAge?.maxItems == 321 && rewrittenAge?.maxAgeDays == 7,
+                        "sanitized age is rewritten to persisted settings"
+                    )
+
+                    let validNonPreset = PersistedSettingsFixture(
+                        pollIntervalMs: 725,
+                        maxItems: 321,
+                        maxAgeDays: 9,
+                        plainTextPaste: true,
+                        launchAtLogin: false
+                    )
+                    userDefaults.set(
+                        try JSONEncoder().encode(validNonPreset),
+                        forKey: defaultsKey
+                    )
                     let model = try AppModel(storeRoot: root, userDefaults: userDefaults)
+                    expect(
+                        model.settings.maxItems == 321 && model.settings.maxAgeDays == 9,
+                        "valid non-preset retention is preserved"
+                    )
+                    model.store.pruneExecutor = { _ in }
                     _ = try model.store.insertText("retention-one")
                     _ = try model.store.insertText("retention-two")
                     _ = try model.store.insertText("retention-three")
