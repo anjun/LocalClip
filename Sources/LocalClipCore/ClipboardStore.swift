@@ -1,10 +1,21 @@
 import Foundation
 import SQLite3
 
-public enum ClipboardStoreError: Error, Equatable {
+public enum ClipboardStoreError: Error, Equatable, LocalizedError {
     case openFailed(String)
     case execFailed(String)
     case invalidCapture
+
+    public var errorDescription: String? {
+        switch self {
+        case .openFailed(let message):
+            return "无法打开数据库：\(message)"
+        case .execFailed(let message):
+            return message
+        case .invalidCapture:
+            return "无效的剪贴板捕获"
+        }
+    }
 }
 
 /// Local SQLite-backed clipboard history. Zero network.
@@ -225,9 +236,10 @@ public final class ClipboardStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let items = try fetchLocked(query: nil)
-        for item in items {
-            try deleteLocked(id: item.id)
+        if !items.isEmpty {
+            try deleteItemsInTransactionLocked(items)
         }
+        retryPendingAssetCleanupLocked()
     }
 
     // MARK: - Private insert
@@ -331,29 +343,30 @@ public final class ClipboardStore: @unchecked Sendable {
     }
 
     private func pruneLocked() throws {
-        let all = try fetchLocked(query: nil) // newest first
         var candidates: [ClipboardItem] = []
         var candidateIDs = Set<String>()
 
-        let now = clock.now()
+        // Age then count: only load rows that are prune candidates (not the full table).
+        let minCreatedAtForCount: Date?
         if settings.maxAgeDays > 0 {
             let maxAge = TimeInterval(settings.maxAgeDays) * 24 * 60 * 60
-            let cutoff = now.addingTimeInterval(-maxAge)
-            for item in all where item.createdAt < cutoff {
+            let cutoff = clock.now().addingTimeInterval(-maxAge)
+            for item in try fetchItemsOlderThanLocked(cutoff) {
                 if candidateIDs.insert(item.id).inserted {
                     candidates.append(item)
                 }
             }
+            minCreatedAtForCount = cutoff
+        } else {
+            minCreatedAtForCount = nil
         }
 
-        // Count prune applies only after age candidates are excluded.
-        let remaining = all.filter { !candidateIDs.contains($0.id) }
-        if remaining.count > settings.maxItems {
-            let excess = remaining.suffix(from: settings.maxItems)
-            for item in excess {
-                if candidateIDs.insert(item.id).inserted {
-                    candidates.append(item)
-                }
+        for item in try fetchCountPruneCandidatesLocked(
+            minCreatedAt: minCreatedAtForCount,
+            keepNewest: settings.maxItems
+        ) {
+            if candidateIDs.insert(item.id).inserted {
+                candidates.append(item)
             }
         }
 
@@ -361,6 +374,75 @@ public final class ClipboardStore: @unchecked Sendable {
             try deleteItemsInTransactionLocked(candidates)
         }
         retryPendingAssetCleanupLocked()
+    }
+
+    /// Rows older than the retention cutoff (newest first).
+    private func fetchItemsOlderThanLocked(_ cutoff: Date) throws -> [ClipboardItem] {
+        let sql = """
+        SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+        FROM items
+        WHERE created_at < ?
+        ORDER BY created_at DESC;
+        """
+        return try fetchItemsWithSQLLocked(sql) { stmt in
+            sqlite3_bind_double(stmt, 1, cutoff.timeIntervalSince1970)
+        }
+    }
+
+    /// Excess rows beyond `keepNewest` among items that survive age filtering.
+    /// Uses SQL OFFSET so retained rows are never materialized.
+    private func fetchCountPruneCandidatesLocked(
+        minCreatedAt: Date?,
+        keepNewest: Int
+    ) throws -> [ClipboardItem] {
+        guard keepNewest > 0 else { return [] }
+        let sql: String
+        if minCreatedAt != nil {
+            sql = """
+            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+            FROM items
+            WHERE created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT -1 OFFSET ?;
+            """
+        } else {
+            sql = """
+            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+            FROM items
+            ORDER BY created_at DESC
+            LIMIT -1 OFFSET ?;
+            """
+        }
+        return try fetchItemsWithSQLLocked(sql) { stmt in
+            if let minCreatedAt {
+                sqlite3_bind_double(stmt, 1, minCreatedAt.timeIntervalSince1970)
+                sqlite3_bind_int64(stmt, 2, Int64(keepNewest))
+            } else {
+                sqlite3_bind_int64(stmt, 1, Int64(keepNewest))
+            }
+        }
+    }
+
+    private func fetchItemsWithSQLLocked(
+        _ sql: String,
+        bind: (OpaquePointer?) throws -> Void
+    ) throws -> [ClipboardItem] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        try bind(stmt)
+        var items: [ClipboardItem] = []
+        while true {
+            let result = sqlite3_step(stmt)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else {
+                throw ClipboardStoreError.execFailed(lastError())
+            }
+            items.append(rowToItem(stmt))
+        }
+        return items
     }
 
     private func deleteLocked(id: String) throws {

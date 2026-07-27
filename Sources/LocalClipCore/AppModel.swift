@@ -377,6 +377,11 @@ public final class AppModel: ObservableObject {
             return false
         }
 
+        // Cover the whole apply (including non-reduction) so overlapping UI Tasks
+        // cannot interleave settings writes or drop a later user selection.
+        isUpdatingRetention = true
+        defer { isUpdatingRetention = false }
+
         let isReduction = AppSettings.isRetentionReduction(
             fromMaxItems: settings.maxItems,
             fromMaxAgeDays: settings.maxAgeDays,
@@ -391,8 +396,6 @@ public final class AppModel: ObservableObject {
 
         guard isReduction else { return true }
 
-        isUpdatingRetention = true
-        defer { isUpdatingRetention = false }
         let store = self.store
         do {
             try await Task.detached(priority: .utility) {
