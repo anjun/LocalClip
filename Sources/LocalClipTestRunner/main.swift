@@ -404,9 +404,14 @@ struct LocalClipTestRunner {
 
         // AppModel is @MainActor. Do not block the main thread with semaphore.wait —
         // pump the run loop so MainActor work and Task.sleep can complete.
-        var finished = false
+        // Use a class box so concurrent Task mutation is legal under Swift 6-style checks
+        // (CI runners reject `var finished` captured across Task boundaries).
+        final class DoneBox: @unchecked Sendable {
+            var value = false
+        }
+        let done = DoneBox()
         Task { @MainActor in
-            defer { finished = true }
+            defer { done.value = true }
             do {
                 let model = try AppModel(storeRoot: root)
                 // Short debounce so tests stay fast; production default is longer.
@@ -444,9 +449,9 @@ struct LocalClipTestRunner {
         }
 
         let deadline = Date().addingTimeInterval(5)
-        while !finished, Date() < deadline {
+        while !done.value, Date() < deadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
         }
-        expect(finished, "appmodel search tests finished in time")
+        expect(done.value, "appmodel search tests finished in time")
     }
 }
