@@ -402,56 +402,108 @@ struct LocalClipTestRunner {
             .appendingPathComponent("LC-search-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // AppModel is @MainActor. Do not block the main thread with semaphore.wait —
-        // pump the run loop so MainActor work and Task.sleep can complete.
-        // Use a class box so concurrent Task mutation is legal under Swift 6-style checks
-        // (CI runners reject `var finished` captured across Task boundaries).
-        final class DoneBox: @unchecked Sendable {
-            var value = false
+        // Hold shared state in a class so concurrent mutation is legal under strict concurrency.
+        final class State: @unchecked Sendable {
+            var model: AppModel?
+            var setupError: String?
+            var phase = 0 // 0 loading, 1 ready, 2 done
         }
-        let done = DoneBox()
-        Task { @MainActor in
-            defer { done.value = true }
-            do {
-                let model = try AppModel(storeRoot: root)
-                // Short debounce so tests stay fast; production default is longer.
-                model.searchDebounceNanoseconds = 80_000_000
+        let state = State()
 
-                _ = try model.store.insertText("Hello Alpha")
-                _ = try model.store.insertText("other beta")
-                _ = try model.store.insertImage(data: tinyPNG())
-
-                model.refresh()
-                expect(model.items.count == 3, "seeded history before search")
-
-                // Rapid query changes (IME / typing): must not apply intermediate "H" filter
-                // before debounce settles on "Hello".
-                model.searchQuery = "H"
-                let midCount = model.items.count
-                expect(midCount == 3, "searchQuery change is not synchronous (still \(midCount))")
-
-                model.searchQuery = "He"
-                model.searchQuery = "Hello"
-                try await Task.sleep(nanoseconds: 200_000_000)
-
-                expect(model.items.count == 1, "debounced search applies final query")
-                expect(model.items.first?.textContent == "Hello Alpha", "final search content")
-
-                // Clear search: after debounce, images return with all items.
-                model.searchQuery = ""
-                expect(model.items.count == 1, "clear search not synchronous")
-                try await Task.sleep(nanoseconds: 200_000_000)
-                expect(model.items.count == 3, "empty query restores full list")
-            } catch {
-                failures += 1
-                print("FAIL appmodel search setup: \(error)")
+        // Drive everything with GCD + RunLoop (matches production debounce timers on CI).
+        DispatchQueue.main.async {
+            Task { @MainActor in
+                do {
+                    let model = try AppModel(storeRoot: root)
+                    model.searchDebounceNanoseconds = 50_000_000
+                    _ = try model.store.insertText("Hello Alpha")
+                    _ = try model.store.insertText("other beta")
+                    _ = try model.store.insertImage(data: tinyPNG())
+                    model.refresh()
+                    state.model = model
+                    state.phase = 1
+                } catch {
+                    state.setupError = "\(error)"
+                    state.phase = 2
+                }
             }
         }
 
-        let deadline = Date().addingTimeInterval(5)
-        while !done.value, Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        // Wait until model is ready.
+        let readyDeadline = Date().addingTimeInterval(3)
+        while state.phase == 0, Date() < readyDeadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
-        expect(done.value, "appmodel search tests finished in time")
+        if let err = state.setupError {
+            failures += 1
+            print("FAIL appmodel search setup: \(err)")
+            return
+        }
+        guard let model = state.model else {
+            expect(false, "appmodel search model ready")
+            return
+        }
+
+        // Assertions hop to MainActor via main queue + RunLoop pump.
+        final class Probe: @unchecked Sendable {
+            var itemsCount = -1
+            var firstText: String?
+            var finished = false
+        }
+
+        func onMain(_ body: @escaping @MainActor () -> Void) {
+            DispatchQueue.main.async {
+                Task { @MainActor in body() }
+            }
+        }
+
+        func readItems() -> (count: Int, first: String?) {
+            let probe = Probe()
+            onMain {
+                probe.itemsCount = model.items.count
+                probe.firstText = model.items.first?.textContent
+                probe.finished = true
+            }
+            let d = Date().addingTimeInterval(2)
+            while !probe.finished, Date() < d {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            return (probe.itemsCount, probe.firstText)
+        }
+
+        func waitItems(count: Int, timeout: TimeInterval = 2) -> Bool {
+            let d = Date().addingTimeInterval(timeout)
+            while Date() < d {
+                if readItems().count == count { return true }
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+            }
+            return readItems().count == count
+        }
+
+        let seeded = readItems()
+        expect(seeded.count == 3, "seeded history before search")
+
+        // Rapid query changes must not apply synchronously.
+        onMain {
+            model.searchQuery = "H"
+        }
+        // Let didSet schedule work, then immediately read.
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        let mid = readItems()
+        expect(mid.count == 3, "searchQuery change is not synchronous (still \(mid.count))")
+
+        onMain {
+            model.searchQuery = "He"
+            model.searchQuery = "Hello"
+        }
+        expect(waitItems(count: 1), "debounced search applies final query")
+        let filtered = readItems()
+        expect(filtered.first == "Hello Alpha", "final search content")
+
+        onMain { model.searchQuery = "" }
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        let afterClear = readItems()
+        expect(afterClear.count == 1, "clear search not synchronous (still \(afterClear.count))")
+        expect(waitItems(count: 3), "empty query restores full list")
     }
 }

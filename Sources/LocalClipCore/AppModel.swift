@@ -47,7 +47,8 @@ public final class AppModel: ObservableObject {
     private let defaultsKey = "LocalClip.AppSettings.v1"
     /// Debounce for search box. Overridable in tests.
     public var searchDebounceNanoseconds: UInt64 = 160_000_000
-    private var searchRefreshTask: Task<Void, Never>?
+    /// GCD work item — more reliable under CLI/CI run loops than nested Task.sleep.
+    private var searchWorkItem: DispatchWorkItem?
     /// Bumped on every load start / sync refresh so stale async results are dropped.
     private var itemsLoadGeneration: UInt64 = 0
 
@@ -126,8 +127,7 @@ public final class AppModel: ObservableObject {
     /// Synchronous history reload (explicit refresh / tests). Does not re-probe Accessibility —
     /// that path is expensive and is polled separately.
     public func refresh() {
-        searchRefreshTask?.cancel()
-        searchRefreshTask = nil
+        cancelPendingSearchLoad()
         itemsLoadGeneration &+= 1
         do {
             if searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -143,51 +143,76 @@ public final class AppModel: ObservableObject {
 
     /// Load history off the main actor, then publish items (startup / open panel / monitor).
     public func refreshAsync() {
-        let query = searchQuery
-        Task { @MainActor [weak self] in
-            await self?.loadItemsAsync(for: query)
-        }
+        startLoadItems(for: searchQuery)
     }
 
     /// Debounce search-box updates so IME composition / rapid typing do not block the main thread.
     private func scheduleSearchRefresh() {
-        searchRefreshTask?.cancel()
+        cancelPendingSearchLoad()
         let query = searchQuery
-        let delay = searchDebounceNanoseconds
-        searchRefreshTask = Task { @MainActor [weak self] in
-            if delay > 0 {
-                do {
-                    try await Task.sleep(nanoseconds: delay)
-                } catch {
-                    return
-                }
+        let delayNs = searchDebounceNanoseconds
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                self?.startLoadItems(for: query)
             }
-            guard let self, !Task.isCancelled else { return }
-            guard self.searchQuery == query else { return }
-            await self.loadItemsAsync(for: query)
+        }
+        searchWorkItem = work
+        if delayNs == 0 {
+            DispatchQueue.main.async(execute: work)
+        } else {
+            let clamped = Int(min(delayNs, UInt64(Int.max)))
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + .nanoseconds(clamped),
+                execute: work
+            )
         }
     }
 
-    private func loadItemsAsync(for query: String) async {
+    private func cancelPendingSearchLoad() {
+        searchWorkItem?.cancel()
+        searchWorkItem = nil
+    }
+
+    /// SQLite off the main thread via GCD; publish on MainActor when still current.
+    private func startLoadItems(for query: String) {
+        guard searchQuery == query else { return }
         itemsLoadGeneration &+= 1
         let gen = itemsLoadGeneration
         let store = self.store
-        let loaded: [ClipboardItem]
-        do {
-            loaded = try await Task.detached(priority: .userInitiated) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result: Result<[ClipboardItem], Error>
+            do {
                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return try store.allItems()
+                    result = .success(try store.allItems())
+                } else {
+                    result = .success(try store.search(query))
                 }
-                return try store.search(query)
-            }.value
-        } catch {
-            statusMessage = "Load failed: \(error)"
-            return
+            } catch {
+                result = .failure(error)
+            }
+            DispatchQueue.main.async {
+                Task { @MainActor [weak self] in
+                    self?.applyLoadResult(result, generation: gen, query: query)
+                }
+            }
         }
+    }
+
+    private func applyLoadResult(
+        _ result: Result<[ClipboardItem], Error>,
+        generation: UInt64,
+        query: String
+    ) {
         // Drop stale results from an older generation or a superseded query.
-        guard gen == itemsLoadGeneration, searchQuery == query else { return }
-        items = loaded
-        reconcileSelection()
+        guard generation == itemsLoadGeneration, searchQuery == query else { return }
+        switch result {
+        case .success(let loaded):
+            items = loaded
+            reconcileSelection()
+        case .failure(let error):
+            statusMessage = "Load failed: \(error)"
+        }
     }
 
     private func reconcileSelection() {
