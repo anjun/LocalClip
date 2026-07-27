@@ -1,6 +1,9 @@
 import Foundation
 
 public struct AppSettings: Equatable, Sendable {
+    public static let retentionMaxItemOptions = [50, 100, 200, 500, 1000]
+    public static let retentionMaxAgeDayOptions = [1, 3, 7, 14, 30, 0]
+
     public var pollIntervalMs: Int
     public var maxItems: Int
     public var maxAgeDays: Int
@@ -31,6 +34,25 @@ public struct AppSettings: Equatable, Sendable {
 
     public var pollInterval: TimeInterval {
         Double(pollIntervalMs) / 1000.0
+    }
+
+    public static func isValidRetention(maxItems: Int, maxAgeDays: Int) -> Bool {
+        (1...1_000_000).contains(maxItems) && (0...36_500).contains(maxAgeDays)
+    }
+
+    public static func isRetentionReduction(
+        fromMaxItems: Int,
+        fromMaxAgeDays: Int,
+        toMaxItems: Int,
+        toMaxAgeDays: Int
+    ) -> Bool {
+        if toMaxItems < fromMaxItems {
+            return true
+        }
+        if fromMaxAgeDays == 0 {
+            return toMaxAgeDays > 0
+        }
+        return toMaxAgeDays > 0 && toMaxAgeDays < fromMaxAgeDays
     }
 }
 

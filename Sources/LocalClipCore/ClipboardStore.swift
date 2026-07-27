@@ -329,13 +329,13 @@ public final class ClipboardStore: @unchecked Sendable {
 
     private func pruneLocked() throws {
         let now = clock.now()
-        let maxAge = TimeInterval(settings.maxAgeDays * 24 * 60 * 60)
-        let cutoff = now.addingTimeInterval(-maxAge)
-
-        // Age prune
-        let aged = try fetchIdsOlderThanLocked(cutoff)
-        for id in aged {
-            try deleteLocked(id: id)
+        if settings.maxAgeDays > 0 {
+            let maxAge = TimeInterval(settings.maxAgeDays) * 24 * 60 * 60
+            let cutoff = now.addingTimeInterval(-maxAge)
+            let aged = try fetchIdsOlderThanLocked(cutoff)
+            for id in aged {
+                try deleteLocked(id: id)
+            }
         }
 
         // Count prune: keep newest maxItems

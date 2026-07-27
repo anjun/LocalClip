@@ -9,6 +9,7 @@ struct LocalClipTestRunner {
     static var failures = 0
 
     static func main() {
+        runRetentionPolicyTests()
         runStoreTests()
         runPasteTests()
         runGuardTests()
@@ -56,6 +57,37 @@ struct LocalClipTestRunner {
             print("FAIL store setup: \(error)")
         }
         try? FileManager.default.removeItem(at: root)
+    }
+
+    static func runRetentionPolicyTests() {
+        print("--- retention policy ---")
+        expect(AppSettings.retentionMaxItemOptions == [50, 100, 200, 500, 1000], "retention item presets")
+        expect(AppSettings.retentionMaxAgeDayOptions == [1, 3, 7, 14, 30, 0], "retention age presets")
+        expect(AppSettings.isValidRetention(maxItems: 200, maxAgeDays: 0), "permanent retention valid")
+        expect(!AppSettings.isValidRetention(maxItems: 0, maxAgeDays: 7), "zero item limit invalid")
+        expect(!AppSettings.isValidRetention(maxItems: 200, maxAgeDays: -1), "negative age invalid")
+        expect(AppSettings.isRetentionReduction(
+            fromMaxItems: 200, fromMaxAgeDays: 7,
+            toMaxItems: 100, toMaxAgeDays: 7
+        ), "lower item limit is reduction")
+        expect(AppSettings.isRetentionReduction(
+            fromMaxItems: 200, fromMaxAgeDays: 0,
+            toMaxItems: 200, toMaxAgeDays: 30
+        ), "permanent to finite age is reduction")
+        expect(!AppSettings.isRetentionReduction(
+            fromMaxItems: 200, fromMaxAgeDays: 7,
+            toMaxItems: 500, toMaxAgeDays: 0
+        ), "raising count and selecting permanent is not reduction")
+
+        withStore { store, clock, _ in
+            _ = try store.insertText("permanent")
+            clock.date = clock.date.addingTimeInterval(31 * 24 * 60 * 60)
+            store.updateSettings(AppSettings(maxItems: 200, maxAgeDays: 0))
+            try store.prune()
+            let items = try store.allItems()
+            expect(items.count == 1, "permanent retention skips age pruning")
+            expect(items.first?.textContent == "permanent", "permanent retention keeps old item")
+        }
     }
 
     static func runStoreTests() {
