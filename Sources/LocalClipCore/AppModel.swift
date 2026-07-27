@@ -180,7 +180,10 @@ public final class AppModel: ObservableObject {
         itemsLoadGeneration &+= 1
         let gen = itemsLoadGeneration
         let store = self.store
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // No `[weak self]` on the global queue: we only need `store` there.
+        // Hop back with `Task { @MainActor [weak self] }` (Swift 6–safe; avoids
+        // "reference to captured var self in concurrently-executing code").
+        DispatchQueue.global(qos: .userInitiated).async {
             let result: Result<[ClipboardItem], Error>
             do {
                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -191,10 +194,8 @@ public final class AppModel: ObservableObject {
             } catch {
                 result = .failure(error)
             }
-            DispatchQueue.main.async {
-                Task { @MainActor [weak self] in
-                    self?.applyLoadResult(result, generation: gen, query: query)
-                }
+            Task { @MainActor [weak self] in
+                self?.applyLoadResult(result, generation: gen, query: query)
             }
         }
     }
@@ -411,11 +412,14 @@ public final class AppModel: ObservableObject {
         isInstallingUpdate = true
         updateProgress = 0
         updateCheckMessage = "正在下载安装包…"
+        // Capture FileManager on MainActor before the async hop (FileManager is not Sendable).
+        let fileManager = FileManager.default
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 _ = try await UpdateChecker.downloadAndPrepareInstall(
                     zipURL: zip,
+                    fileManager: fileManager,
                     onProgress: { fraction in
                         Task { @MainActor [weak self] in
                             guard let self else { return }

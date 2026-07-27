@@ -9,13 +9,24 @@ on:
 jobs:
   test:
     name: Test (macOS)
-    runs-on: macos-14
+    # Pin image + Xcode so Swift does not silently drift when GitHub updates runners.
+    # macos-15 + Xcode 16.x → Swift 6.x (matches modern local toolchains better than
+    # macos-14's default Swift 5.10).
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          # Pin major.minor; bump intentionally when you adopt a new Xcode/Swift.
+          xcode-version: "16.4"
+
       - name: Swift version
-        run: swift --version
+        run: |
+          swift --version
+          xcodebuild -version
 
       - name: Run unit tests
         run: swift run -c release LocalClipTestRunner
