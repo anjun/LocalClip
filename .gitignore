@@ -7,4 +7,4 @@ DerivedData/
 .worktrees/
 
 # Design notes / specs (local only)
-docs/
+docs/*
