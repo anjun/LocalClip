@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import LocalClipCore
 import SQLite3
@@ -599,6 +600,7 @@ struct LocalClipTestRunner {
                         restored.store.settings.maxItems == 2 && restored.store.settings.maxAgeDays == 0,
                         "invalid retention update preserves store settings"
                     )
+                    restored.plainTextPaste = false
 
                     var exclusiveLock: OpaquePointer?
                     let databasePath = root.appendingPathComponent("db.sqlite").path
@@ -612,8 +614,19 @@ struct LocalClipTestRunner {
                         "retention rollback test acquires SQLite exclusive lock"
                     )
 
+                    var changedPlainTextPasteDuringUpdate = false
+                    let retentionUpdateObserver = restored.$isUpdatingRetention.sink { isUpdating in
+                        guard isUpdating else { return }
+                        changedPlainTextPasteDuringUpdate = true
+                        restored.plainTextPaste = true
+                    }
                     let failedReduction = await restored.updateRetention(maxItems: 1, maxAgeDays: 0)
+                    retentionUpdateObserver.cancel()
                     expect(!failedReduction, "locked SQLite prune reports retention update failure")
+                    expect(
+                        changedPlainTextPasteDuringUpdate,
+                        "unrelated setting changes after retention update starts"
+                    )
                     expect(
                         restored.settings.maxItems == 2 && restored.settings.maxAgeDays == 0,
                         "failed prune restores prior model retention settings"
@@ -629,6 +642,18 @@ struct LocalClipTestRunner {
                     expect(
                         rollbackSettings?.maxItems == 2 && rollbackSettings?.maxAgeDays == 0,
                         "failed prune restores prior persisted retention settings"
+                    )
+                    expect(
+                        restored.plainTextPaste && restored.settings.plainTextPaste,
+                        "failed prune preserves current published and model unrelated setting"
+                    )
+                    expect(
+                        restored.store.settings.plainTextPaste,
+                        "failed prune preserves current store unrelated setting"
+                    )
+                    expect(
+                        rollbackSettings?.plainTextPaste == true,
+                        "failed prune preserves current persisted unrelated setting"
                     )
                     expect(
                         restored.statusMessage?.hasPrefix("清理历史记录失败：") == true,
