@@ -15,6 +15,7 @@ struct LocalClipTestRunner {
         runHasherAndOrdering()
         runSelectionTests()
         runUpdateCheckerTests()
+        runAppModelSearchTests()
         if failures == 0 {
             print("ALL TESTS PASSED")
             exit(0)
@@ -391,5 +392,61 @@ struct LocalClipTestRunner {
         let found = UpdateChecker.findAppBundle(in: work)
         expect(found?.lastPathComponent == "LocalClip.app", "findAppBundle locates app")
         try? FileManager.default.removeItem(at: work)
+    }
+
+    /// Search box must not run a synchronous full refresh on every keystroke / IME update.
+    /// Debounced async load: immediate assignment leaves items unchanged; final query wins.
+    static func runAppModelSearchTests() {
+        print("--- appmodel search debounce ---")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LC-search-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // AppModel is @MainActor. Do not block the main thread with semaphore.wait —
+        // pump the run loop so MainActor work and Task.sleep can complete.
+        var finished = false
+        Task { @MainActor in
+            defer { finished = true }
+            do {
+                let model = try AppModel(storeRoot: root)
+                // Short debounce so tests stay fast; production default is longer.
+                model.searchDebounceNanoseconds = 80_000_000
+
+                _ = try model.store.insertText("Hello Alpha")
+                _ = try model.store.insertText("other beta")
+                _ = try model.store.insertImage(data: tinyPNG())
+
+                model.refresh()
+                expect(model.items.count == 3, "seeded history before search")
+
+                // Rapid query changes (IME / typing): must not apply intermediate "H" filter
+                // before debounce settles on "Hello".
+                model.searchQuery = "H"
+                let midCount = model.items.count
+                expect(midCount == 3, "searchQuery change is not synchronous (still \(midCount))")
+
+                model.searchQuery = "He"
+                model.searchQuery = "Hello"
+                try await Task.sleep(nanoseconds: 200_000_000)
+
+                expect(model.items.count == 1, "debounced search applies final query")
+                expect(model.items.first?.textContent == "Hello Alpha", "final search content")
+
+                // Clear search: after debounce, images return with all items.
+                model.searchQuery = ""
+                expect(model.items.count == 1, "clear search not synchronous")
+                try await Task.sleep(nanoseconds: 200_000_000)
+                expect(model.items.count == 3, "empty query restores full list")
+            } catch {
+                failures += 1
+                print("FAIL appmodel search setup: \(error)")
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(5)
+        while !finished, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        expect(finished, "appmodel search tests finished in time")
     }
 }

@@ -6,8 +6,13 @@ import ServiceManagement
 @MainActor
 public final class AppModel: ObservableObject {
     @Published public private(set) var items: [ClipboardItem] = []
+    /// Bound to the history search field. Updates are debounced + loaded off the main thread
+    /// so IME (中/英) composition and rapid typing do not hitch the UI.
     @Published public var searchQuery: String = "" {
-        didSet { refresh() }
+        didSet {
+            guard oldValue != searchQuery else { return }
+            scheduleSearchRefresh()
+        }
     }
     @Published public var plainTextPaste: Bool {
         didSet {
@@ -40,6 +45,11 @@ public final class AppModel: ObservableObject {
     private var pasteService: PasteService!
     private let systemPasteboard = SystemPasteboard()
     private let defaultsKey = "LocalClip.AppSettings.v1"
+    /// Debounce for search box. Overridable in tests.
+    public var searchDebounceNanoseconds: UInt64 = 160_000_000
+    private var searchRefreshTask: Task<Void, Never>?
+    /// Bumped on every load start / sync refresh so stale async results are dropped.
+    private var itemsLoadGeneration: UInt64 = 0
 
     public init(storeRoot: URL? = nil) throws {
         let root = storeRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -89,7 +99,7 @@ public final class AppModel: ObservableObject {
         )
         mon.onItemsChanged = { [weak self] in
             Task { @MainActor in
-                self?.refresh()
+                self?.refreshAsync()
             }
         }
         mon.start()
@@ -113,7 +123,12 @@ public final class AppModel: ObservableObject {
         isMonitoring = false
     }
 
+    /// Synchronous history reload (explicit refresh / tests). Does not re-probe Accessibility —
+    /// that path is expensive and is polled separately.
     public func refresh() {
+        searchRefreshTask?.cancel()
+        searchRefreshTask = nil
+        itemsLoadGeneration &+= 1
         do {
             if searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 items = try store.allItems()
@@ -124,34 +139,55 @@ public final class AppModel: ObservableObject {
         } catch {
             statusMessage = "Load failed: \(error)"
         }
-        refreshAccessibility()
     }
 
-    /// Load history off the main actor, then publish items (startup / open panel).
+    /// Load history off the main actor, then publish items (startup / open panel / monitor).
     public func refreshAsync() {
-        let store = self.store
         let query = searchQuery
         Task { @MainActor [weak self] in
-            let loaded: [ClipboardItem]
-            do {
-                loaded = try await Task.detached(priority: .userInitiated) {
-                    if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        return try store.allItems()
-                    }
-                    return try store.search(query)
-                }.value
-            } catch {
-                self?.statusMessage = "Load failed: \(error)"
-                return
-            }
-            guard let self else { return }
-            // Drop stale result if user typed a new search meanwhile.
-            if self.searchQuery == query {
-                self.items = loaded
-                self.reconcileSelection()
-            }
-            self.refreshAccessibility()
+            await self?.loadItemsAsync(for: query)
         }
+    }
+
+    /// Debounce search-box updates so IME composition / rapid typing do not block the main thread.
+    private func scheduleSearchRefresh() {
+        searchRefreshTask?.cancel()
+        let query = searchQuery
+        let delay = searchDebounceNanoseconds
+        searchRefreshTask = Task { @MainActor [weak self] in
+            if delay > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+            }
+            guard let self, !Task.isCancelled else { return }
+            guard self.searchQuery == query else { return }
+            await self.loadItemsAsync(for: query)
+        }
+    }
+
+    private func loadItemsAsync(for query: String) async {
+        itemsLoadGeneration &+= 1
+        let gen = itemsLoadGeneration
+        let store = self.store
+        let loaded: [ClipboardItem]
+        do {
+            loaded = try await Task.detached(priority: .userInitiated) {
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return try store.allItems()
+                }
+                return try store.search(query)
+            }.value
+        } catch {
+            statusMessage = "Load failed: \(error)"
+            return
+        }
+        // Drop stale results from an older generation or a superseded query.
+        guard gen == itemsLoadGeneration, searchQuery == query else { return }
+        items = loaded
+        reconcileSelection()
     }
 
     private func reconcileSelection() {

@@ -204,7 +204,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     func togglePopover() {
         guard let button = statusItem?.button, let popover else { return }
         model.refreshAccessibility()
-        model.refresh()
+        // Async so opening the panel never blocks the main thread on SQLite / list rebuild.
+        model.refreshAsync()
         model.frontmostTracker.observeFrontmost()
         if popover.isShown {
             popover.performClose(nil)

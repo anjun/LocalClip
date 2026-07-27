@@ -358,7 +358,7 @@ struct HistoryPanel: View {
                 }
                 .padding(.horizontal, 8)
 
-                Button("刷新") { model.refresh() }
+                Button("刷新") { model.refreshAsync() }
                     .buttonStyle(LCGhostButtonStyle())
 
                 Button("退出") {
