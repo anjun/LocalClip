@@ -19,8 +19,8 @@
 
 沿用 `AppSettings.maxItems` 和 `AppSettings.maxAgeDays`，不新增数据库字段。
 
-- `maxItems` 必须是设置页支持的正整数预设之一。
-- `maxAgeDays` 使用 `0` 表示“永久”，其他有效值为设置页支持的天数预设。
+- 设置页只提供预设选项；模型层接受安全范围内的正整数，以兼容已有的非预设配置。
+- `maxAgeDays` 使用 `0` 表示“永久”，其他安全的正整数继续按天数解释。
 - 现有正整数设置继续按原语义加载，无需迁移。
 - 默认值保持 `maxItems = 200`、`maxAgeDays = 7`。
 
