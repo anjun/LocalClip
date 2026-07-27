@@ -384,10 +384,12 @@ public final class ClipboardStore: @unchecked Sendable {
     private func enqueueAssetDeletionsLocked(_ items: [ClipboardItem]) throws {
         var paths = Set<String>()
         for item in items {
-            if let imagePath = item.imagePath {
+            if let imagePath = item.imagePath,
+               controlledAssetURL(for: imagePath) != nil {
                 paths.insert(imagePath)
             }
-            if let thumbPath = item.thumbPath {
+            if let thumbPath = item.thumbPath,
+               controlledAssetURL(for: thumbPath) != nil {
                 paths.insert(thumbPath)
             }
         }
@@ -442,7 +444,14 @@ public final class ClipboardStore: @unchecked Sendable {
         }
 
         for path in paths {
-            let url = rootURL.appendingPathComponent(path)
+            guard let url = controlledAssetURL(for: path) else {
+                do {
+                    try removePendingAssetDeletionLocked(path)
+                } catch {
+                    NSLog("LocalClip invalid pending asset cleanup completion failed for \(path): \(error)")
+                }
+                continue
+            }
             if FileManager.default.fileExists(atPath: url.path) {
                 do {
                     try FileManager.default.removeItem(at: url)
@@ -457,6 +466,37 @@ public final class ClipboardStore: @unchecked Sendable {
                 NSLog("LocalClip pending asset cleanup completion failed for \(path): \(error)")
             }
         }
+    }
+
+    private func controlledAssetURL(for path: String) -> URL? {
+        guard !(path as NSString).isAbsolutePath else { return nil }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count == 2,
+              components[0] == "images" || components[0] == "thumbs",
+              !components[1].isEmpty,
+              components[1] != ".",
+              components[1] != ".." else {
+            return nil
+        }
+
+        let normalizedRoot = rootURL.standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let requestedParent = rootURL.appendingPathComponent(
+            String(components[0]),
+            isDirectory: true
+        )
+        let resolvedParent = requestedParent.standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootComponents = normalizedRoot.pathComponents
+        let parentComponents = resolvedParent.pathComponents
+        guard parentComponents.count > rootComponents.count,
+              Array(parentComponents.prefix(rootComponents.count)) == rootComponents else {
+            return nil
+        }
+
+        return requestedParent.appendingPathComponent(String(components[1]))
     }
 
     private func fetchPendingAssetDeletionPathsLocked() throws -> [String] {

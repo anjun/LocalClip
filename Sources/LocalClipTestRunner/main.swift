@@ -58,6 +58,55 @@ struct LocalClipTestRunner {
         return data
     }
 
+    static func executeSQL(
+        _ db: OpaquePointer?,
+        _ sql: String,
+        bindings: [String] = []
+    ) throws {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (offset, value) in bindings.enumerated() {
+            sqlite3_bind_text(
+                stmt,
+                Int32(offset + 1),
+                value,
+                -1,
+                unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            )
+        }
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw ClipboardStoreError.execFailed(String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    static func queryInt(
+        _ db: OpaquePointer?,
+        _ sql: String,
+        bindings: [String] = []
+    ) throws -> Int {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (offset, value) in bindings.enumerated() {
+            sqlite3_bind_text(
+                stmt,
+                Int32(offset + 1),
+                value,
+                -1,
+                unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            )
+        }
+        guard sqlite3_step(stmt) == SQLITE_ROW else {
+            throw ClipboardStoreError.execFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        return Int(sqlite3_column_int64(stmt, 0))
+    }
+
     static func withStore(_ body: (ClipboardStore, FixedClock, URL) throws -> Void) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LC-test-\(UUID().uuidString)", isDirectory: true)
@@ -289,6 +338,185 @@ struct LocalClipTestRunner {
             expect(!FileManager.default.fileExists(atPath: imageURL.path), "image file deleted")
             expect(!FileManager.default.fileExists(atPath: thumbURL.path), "thumb deleted")
             expect(try store.allItems().isEmpty, "row deleted")
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let outsideSentinelURL = root.deletingLastPathComponent()
+                .appendingPathComponent("LC-outside-\(UUID().uuidString)")
+            defer { try? fileManager.removeItem(at: outsideSentinelURL) }
+            try Data("outside sentinel".utf8).write(to: outsideSentinelURL)
+
+            let validOrphanURL = store.imagesURL.appendingPathComponent("valid-orphan.png")
+            try Data("valid orphan".utf8).write(to: validOrphanURL)
+            let controlledButInvalidURL = root.appendingPathComponent("not-an-asset.txt")
+            try Data("controlled sentinel".utf8).write(to: controlledButInvalidURL)
+            let nestedDirectoryURL = store.imagesURL.appendingPathComponent("nested", isDirectory: true)
+            try fileManager.createDirectory(at: nestedDirectoryURL, withIntermediateDirectories: false)
+            let nestedAssetURL = nestedDirectoryURL.appendingPathComponent("nested.png")
+            try Data("nested sentinel".utf8).write(to: nestedAssetURL)
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "path safety test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+
+            let invalidPaths = [
+                "../\(outsideSentinelURL.lastPathComponent)",
+                outsideSentinelURL.path,
+                "images/",
+                "images//valid-orphan.png",
+                "images/./valid-orphan.png",
+                "images/../not-an-asset.txt",
+                "images/nested/nested.png",
+                "other/file.txt"
+            ]
+            for path in invalidPaths {
+                try executeSQL(
+                    pathDB,
+                    "INSERT INTO pending_asset_deletions (path) VALUES (?);",
+                    bindings: [path]
+                )
+            }
+            try executeSQL(
+                pathDB,
+                "INSERT INTO pending_asset_deletions (path) VALUES (?);",
+                bindings: ["images/valid-orphan.png"]
+            )
+
+            try store.prune()
+
+            expect(
+                fileManager.fileExists(atPath: outsideSentinelURL.path),
+                "invalid manifest traversal and absolute paths cannot delete an outside sentinel"
+            )
+            expect(
+                fileManager.fileExists(atPath: controlledButInvalidURL.path),
+                "invalid manifest parent traversal cannot delete a non-asset store file"
+            )
+            expect(
+                fileManager.fileExists(atPath: nestedAssetURL.path),
+                "invalid manifest path with extra components cannot delete a nested asset"
+            )
+            expect(
+                !fileManager.fileExists(atPath: validOrphanURL.path),
+                "valid manifest image path still removes the referenced asset"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM pending_asset_deletions;") == 0,
+                "invalid manifest paths are discarded instead of retried"
+            )
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let outsideDirectoryURL = root.deletingLastPathComponent()
+                .appendingPathComponent("LC-symlink-assets-\(UUID().uuidString)", isDirectory: true)
+            defer { try? fileManager.removeItem(at: outsideDirectoryURL) }
+            try fileManager.createDirectory(at: outsideDirectoryURL, withIntermediateDirectories: false)
+            let outsideSentinelURL = outsideDirectoryURL.appendingPathComponent("symlink-sentinel.png")
+            try Data("symlink sentinel".utf8).write(to: outsideSentinelURL)
+
+            try fileManager.removeItem(at: store.imagesURL)
+            try fileManager.createSymbolicLink(
+                at: store.imagesURL,
+                withDestinationURL: outsideDirectoryURL
+            )
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "symlink path safety test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+            try executeSQL(
+                pathDB,
+                "INSERT INTO pending_asset_deletions (path) VALUES (?);",
+                bindings: ["images/symlink-sentinel.png"]
+            )
+
+            try store.prune()
+
+            expect(
+                fileManager.fileExists(atPath: outsideSentinelURL.path),
+                "asset directory symlink outside the normalized store root cannot delete its target"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM pending_asset_deletions;") == 0,
+                "manifest path through an escaping asset-directory symlink is discarded"
+            )
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let item = try store.insertImage(data: uniquePNG(10))!
+            let originalImageURL = root.appendingPathComponent(item.imagePath!)
+            let originalThumbURL = root.appendingPathComponent(item.thumbPath!)
+            let outsideSentinelURL = root.deletingLastPathComponent()
+                .appendingPathComponent("LC-corrupt-row-\(UUID().uuidString)")
+            defer { try? fileManager.removeItem(at: outsideSentinelURL) }
+            try Data("corrupt row sentinel".utf8).write(to: outsideSentinelURL)
+            let invalidPath = "../\(outsideSentinelURL.lastPathComponent)"
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "corrupt item path test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+            try executeSQL(
+                pathDB,
+                "UPDATE items SET image_path = ? WHERE id = ?;",
+                bindings: [invalidPath, item.id]
+            )
+            try executeSQL(pathDB, "CREATE TABLE asset_enqueue_audit (path TEXT NOT NULL);")
+            try executeSQL(
+                pathDB,
+                """
+                CREATE TRIGGER audit_asset_enqueue
+                AFTER INSERT ON pending_asset_deletions
+                BEGIN
+                  INSERT INTO asset_enqueue_audit (path) VALUES (NEW.path);
+                END;
+                """
+            )
+
+            try store.delete(id: item.id)
+
+            expect(try store.item(id: item.id) == nil, "corrupt item row is still deleted")
+            expect(
+                fileManager.fileExists(atPath: outsideSentinelURL.path),
+                "corrupt item asset traversal cannot delete an outside sentinel"
+            )
+            expect(
+                try queryInt(
+                    pathDB,
+                    "SELECT COUNT(*) FROM asset_enqueue_audit WHERE path = ?;",
+                    bindings: [invalidPath]
+                ) == 0,
+                "corrupt item asset traversal is rejected before manifest insertion"
+            )
+            expect(
+                try queryInt(
+                    pathDB,
+                    "SELECT COUNT(*) FROM pending_asset_deletions WHERE path = ?;",
+                    bindings: [invalidPath]
+                ) == 0,
+                "corrupt item asset traversal leaves no invalid manifest entry"
+            )
+            expect(
+                fileManager.fileExists(atPath: originalImageURL.path),
+                "corrupt item cleanup does not infer or remove the lost original image path"
+            )
+            expect(
+                !fileManager.fileExists(atPath: originalThumbURL.path),
+                "valid thumbnail path from a corrupt item still cleans up normally"
+            )
         }
 
         withStore { store, clock, root in
