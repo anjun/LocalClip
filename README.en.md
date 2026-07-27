@@ -34,7 +34,7 @@ Requires macOS 13+ (universal arm64 + x86_64 builds).
 | Click a row | Write pasteboard + try auto-paste |
 | Right-click status item | Preferences, updates, quit |
 
-Search text in the panel; optional plain-text paste (text only). Keeps up to **200 items / 7 days**.
+Search text in the panel; optional plain-text paste (text only). Preferences lets you set the item-count limit and retention duration independently; the default remains **200 items / 7 days**. Choosing a permanent duration disables age-based cleanup, while the item-count limit continues to apply.
 
 ## Privacy
 
