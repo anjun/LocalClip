@@ -52,6 +52,12 @@ struct LocalClipTestRunner {
         )!
     }
 
+    static func uniquePNG(_ marker: UInt8) -> Data {
+        var data = tinyPNG()
+        data.append(marker)
+        return data
+    }
+
     static func withStore(_ body: (ClipboardStore, FixedClock, URL) throws -> Void) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LC-test-\(UUID().uuidString)", isDirectory: true)
@@ -62,6 +68,7 @@ struct LocalClipTestRunner {
                 settings: AppSettings(maxItems: 200, maxAgeDays: 7),
                 clock: clock
             )
+            store.pruneExecutor = { _ in }
             try body(store, clock, root)
         } catch {
             failures += 1
@@ -91,6 +98,7 @@ struct LocalClipTestRunner {
         ), "raising count and selecting permanent is not reduction")
 
         withStore { store, clock, _ in
+            store.pruneExecutor = { _ in }
             _ = try store.insertText("permanent")
             clock.date = clock.date.addingTimeInterval(31 * 24 * 60 * 60)
             store.updateSettings(AppSettings(maxItems: 200, maxAgeDays: 0))
@@ -132,6 +140,64 @@ struct LocalClipTestRunner {
             expect(try store.insertImage(data: png) == nil, "adjacent image dedupe")
         }
 
+        withStore { store, _, root in
+            store.pruneExecutor = { _ in }
+            guard let item = try store.insertText("locked lookup") else {
+                expect(false, "locked lookup fixture inserted")
+                return
+            }
+            expect(try store.item(id: item.id)?.id == item.id, "locked lookup statement is warmed")
+
+            var lockingDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &lockingDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "locked lookup opens independent SQLite connection")
+                return
+            }
+            defer {
+                if let lockingDB {
+                    _ = sqlite3_exec(lockingDB, "ROLLBACK;", nil, nil, nil)
+                    sqlite3_close(lockingDB)
+                }
+            }
+            guard sqlite3_exec(lockingDB, "BEGIN EXCLUSIVE;", nil, nil, nil) == SQLITE_OK else {
+                expect(false, "locked lookup acquires exclusive SQLite lock")
+                return
+            }
+
+            var threwStepError = false
+            do {
+                _ = try store.item(id: item.id)
+            } catch let error as ClipboardStoreError {
+                if case .execFailed = error {
+                    threwStepError = true
+                }
+            }
+            expect(threwStepError, "locked public item lookup reports SQLite step failure")
+
+            expect(
+                sqlite3_exec(lockingDB, "ROLLBACK;", nil, nil, nil) == SQLITE_OK,
+                "locked lookup releases exclusive SQLite lock"
+            )
+            sqlite3_close(lockingDB)
+            lockingDB = nil
+            expect(try store.item(id: item.id)?.id == item.id, "locked lookup preserves the existing row")
+        }
+
+        withStore { store, _, _ in
+            let inFlightImageURL = store.imagesURL.appendingPathComponent("in-flight.png")
+            let inFlightThumbURL = store.thumbsURL.appendingPathComponent("in-flight.jpg")
+            try uniquePNG(9).write(to: inFlightImageURL)
+            try Data("in-flight-thumb".utf8).write(to: inFlightThumbURL)
+
+            try store.prune()
+            expect(
+                FileManager.default.fileExists(atPath: inFlightImageURL.path)
+                    && FileManager.default.fileExists(atPath: inFlightThumbURL.path),
+                "prune does not delete untracked in-flight assets"
+            )
+        }
+
         withStore { store, _, _ in
             let capture = ClipboardCapture(text: "caption", imageData: tinyPNG(), sourceBundleId: "com.ex")
             let inserted = try store.ingest(capture)
@@ -169,6 +235,28 @@ struct LocalClipTestRunner {
             expect(items.first?.textContent == "new", "age keeps new")
         }
 
+        withStore { store, clock, _ in
+            store.pruneExecutor = { _ in }
+            store.updateSettings(AppSettings(maxItems: 2, maxAgeDays: 7))
+            _ = try store.insertText("old-1")
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("old-2")
+            clock.date = clock.date.addingTimeInterval(8 * 24 * 60 * 60)
+            _ = try store.insertText("recent-1")
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("recent-2")
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("recent-3")
+
+            try store.prune()
+            let items = try store.allItems()
+            expect(items.count == 2, "combined prune applies count to age-filtered records")
+            expect(
+                items.map(\.textContent) == ["recent-3", "recent-2"],
+                "combined prune preserves the newest records remaining after age pruning"
+            )
+        }
+
         // Insert must not wait for prune: hold pruneExecutor until we flush.
         withStore { store, clock, _ in
             store.updateSettings(AppSettings(maxItems: 2, maxAgeDays: 7))
@@ -201,6 +289,154 @@ struct LocalClipTestRunner {
             expect(!FileManager.default.fileExists(atPath: imageURL.path), "image file deleted")
             expect(!FileManager.default.fileExists(atPath: thumbURL.path), "thumb deleted")
             expect(try store.allItems().isEmpty, "row deleted")
+        }
+
+        withStore { store, clock, root in
+            store.pruneExecutor = { _ in }
+            store.updateSettings(AppSettings(maxItems: 1, maxAgeDays: 0))
+            var inserted: [ClipboardItem] = []
+            for marker: UInt8 in 1...3 {
+                clock.date = clock.date.addingTimeInterval(1)
+                inserted.append(try store.insertImage(data: uniquePNG(marker))!)
+            }
+            let assetURLs = inserted.flatMap { item in
+                [
+                    root.appendingPathComponent(item.imagePath!),
+                    root.appendingPathComponent(item.thumbPath!)
+                ]
+            }
+
+            var faultDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &faultDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "atomic prune fault opens independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(faultDB) }
+            let faultSQL = """
+            CREATE TABLE prune_fault (attempts INTEGER NOT NULL);
+            INSERT INTO prune_fault (attempts) VALUES (0);
+            CREATE TRIGGER abort_second_prune_delete
+            BEFORE DELETE ON items
+            BEGIN
+              UPDATE prune_fault SET attempts = attempts + 1;
+              SELECT CASE WHEN (SELECT attempts FROM prune_fault) = 2
+                THEN RAISE(ABORT, 'forced second prune delete failure')
+              END;
+            END;
+            """
+            guard sqlite3_exec(faultDB, faultSQL, nil, nil, nil) == SQLITE_OK else {
+                expect(false, "atomic prune installs a real second-delete SQLite fault")
+                return
+            }
+
+            var pruneThrew = false
+            do {
+                try store.prune()
+            } catch let error as ClipboardStoreError {
+                if case .execFailed = error {
+                    pruneThrew = true
+                }
+            }
+            expect(pruneThrew, "second candidate SQLite failure is reported")
+            expect(try store.allItems().count == 3, "failed batch prune rolls back every candidate row")
+            expect(
+                assetURLs.allSatisfy { FileManager.default.fileExists(atPath: $0.path) },
+                "failed batch prune preserves every referenced image and thumbnail"
+            )
+        }
+
+        withStore { store, clock, root in
+            store.pruneExecutor = { _ in }
+            store.updateSettings(AppSettings(maxItems: 1, maxAgeDays: 0))
+            var inserted: [ClipboardItem] = []
+            for marker: UInt8 in 4...6 {
+                clock.date = clock.date.addingTimeInterval(1)
+                inserted.append(try store.insertImage(data: uniquePNG(marker))!)
+            }
+
+            try store.prune()
+            let remaining = try store.allItems()
+            expect(remaining.map(\.id) == [inserted[2].id], "successful batch prune keeps only the newest row")
+            for item in inserted.dropLast() {
+                expect(
+                    !FileManager.default.fileExists(
+                        atPath: root.appendingPathComponent(item.imagePath!).path
+                    ),
+                    "successful batch prune removes candidate image \(item.id)"
+                )
+                expect(
+                    !FileManager.default.fileExists(
+                        atPath: root.appendingPathComponent(item.thumbPath!).path
+                    ),
+                    "successful batch prune removes candidate thumbnail \(item.id)"
+                )
+            }
+            expect(
+                FileManager.default.fileExists(
+                    atPath: root.appendingPathComponent(inserted[2].imagePath!).path
+                ),
+                "successful batch prune preserves retained image"
+            )
+            expect(
+                FileManager.default.fileExists(
+                    atPath: root.appendingPathComponent(inserted[2].thumbPath!).path
+                ),
+                "successful batch prune preserves retained thumbnail"
+            )
+        }
+
+        withStore { store, clock, root in
+            store.pruneExecutor = { _ in }
+            store.updateSettings(AppSettings(maxItems: 1, maxAgeDays: 0))
+            clock.date = clock.date.addingTimeInterval(1)
+            let obsolete = try store.insertImage(data: uniquePNG(7))!
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertImage(data: uniquePNG(8))!
+            let obsoleteImageURL = root.appendingPathComponent(obsolete.imagePath!)
+            let obsoleteThumbURL = root.appendingPathComponent(obsolete.thumbPath!)
+
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: store.imagesURL.path
+                )
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: store.thumbsURL.path
+                )
+            }
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o500],
+                ofItemAtPath: store.imagesURL.path
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o500],
+                ofItemAtPath: store.thumbsURL.path
+            )
+
+            try store.prune()
+            expect(try store.item(id: obsolete.id) == nil, "database prune commits despite asset cleanup failure")
+            expect(
+                FileManager.default.fileExists(atPath: obsoleteImageURL.path)
+                    && FileManager.default.fileExists(atPath: obsoleteThumbURL.path),
+                "failed asset cleanup leaves retryable image and thumbnail orphans"
+            )
+
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: store.imagesURL.path
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: store.thumbsURL.path
+            )
+            try store.prune()
+            expect(
+                !FileManager.default.fileExists(atPath: obsoleteImageURL.path)
+                    && !FileManager.default.fileExists(atPath: obsoleteThumbURL.path),
+                "later prune retries and removes orphaned image and thumbnail assets"
+            )
         }
 
         // Thumbnails must not be full-size dumps (root cause of list jank).
@@ -667,26 +903,25 @@ struct LocalClipTestRunner {
                     sqlite3_close(exclusiveLock)
                     exclusiveLock = nil
 
-                    restored.store.pruneExecutor = { _ in }
-                    for index in 0..<500 {
-                        _ = try restored.store.insertText("overlap-\(index)")
-                    }
-                    let firstUpdate = Task { @MainActor in
-                        await restored.updateRetention(maxItems: 1, maxAgeDays: 0)
-                    }
+                    var overlappingUpdate: Task<Bool, Never>?
                     var observedUpdating = false
-                    for _ in 0..<10_000 {
-                        if restored.isUpdatingRetention {
-                            observedUpdating = true
-                            break
+                    let overlapObserver = restored.$isUpdatingRetention.sink { isUpdating in
+                        guard isUpdating, overlappingUpdate == nil else { return }
+                        observedUpdating = true
+                        overlappingUpdate = Task { @MainActor in
+                            await restored.updateRetention(maxItems: 2, maxAgeDays: 0)
                         }
-                        await Task.yield()
                     }
+                    let firstUpdateSucceeded = await restored.updateRetention(maxItems: 1, maxAgeDays: 0)
+                    overlapObserver.cancel()
                     expect(observedUpdating, "first retention reduction enters updating state")
-
-                    let overlapping = await restored.updateRetention(maxItems: 2, maxAgeDays: 0)
-                    expect(!overlapping, "overlapping retention update is rejected")
-                    expect(await firstUpdate.value, "first overlapping retention update succeeds")
+                    if let overlappingUpdate {
+                        let overlappingSucceeded = await overlappingUpdate.value
+                        expect(!overlappingSucceeded, "overlapping retention update is rejected")
+                    } else {
+                        expect(false, "overlapping retention update is scheduled from updating publication")
+                    }
+                    expect(firstUpdateSucceeded, "first overlapping retention update succeeds")
                     expect(
                         restored.settings.maxItems == 1 && restored.settings.maxAgeDays == 0,
                         "rejected overlapping update cannot overwrite active retention settings"
@@ -733,6 +968,7 @@ struct LocalClipTestRunner {
                 do {
                     let model = try AppModel(storeRoot: root)
                     model.searchDebounceNanoseconds = 50_000_000
+                    model.store.pruneExecutor = { _ in }
                     _ = try model.store.insertText("Hello Alpha")
                     _ = try model.store.insertText("other beta")
                     _ = try model.store.insertImage(data: tinyPNG())
