@@ -1,5 +1,15 @@
+import Combine
 import Foundation
 import LocalClipCore
+import SQLite3
+
+private struct PersistedSettingsFixture: Codable {
+    var pollIntervalMs: Int
+    var maxItems: Int
+    var maxAgeDays: Int
+    var plainTextPaste: Bool
+    var launchAtLogin: Bool
+}
 
 // Lightweight test runner (no XCTest — works with Command Line Tools only).
 // Exercises shipped LocalClipCore types only.
@@ -9,12 +19,14 @@ struct LocalClipTestRunner {
     static var failures = 0
 
     static func main() {
+        runRetentionPolicyTests()
         runStoreTests()
         runPasteTests()
         runGuardTests()
         runHasherAndOrdering()
         runSelectionTests()
         runUpdateCheckerTests()
+        runAppModelRetentionTests()
         runAppModelSearchTests()
         if failures == 0 {
             print("ALL TESTS PASSED")
@@ -40,6 +52,61 @@ struct LocalClipTestRunner {
         )!
     }
 
+    static func uniquePNG(_ marker: UInt8) -> Data {
+        var data = tinyPNG()
+        data.append(marker)
+        return data
+    }
+
+    static func executeSQL(
+        _ db: OpaquePointer?,
+        _ sql: String,
+        bindings: [String] = []
+    ) throws {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (offset, value) in bindings.enumerated() {
+            sqlite3_bind_text(
+                stmt,
+                Int32(offset + 1),
+                value,
+                -1,
+                unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            )
+        }
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw ClipboardStoreError.execFailed(String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    static func queryInt(
+        _ db: OpaquePointer?,
+        _ sql: String,
+        bindings: [String] = []
+    ) throws -> Int {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (offset, value) in bindings.enumerated() {
+            sqlite3_bind_text(
+                stmt,
+                Int32(offset + 1),
+                value,
+                -1,
+                unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            )
+        }
+        guard sqlite3_step(stmt) == SQLITE_ROW else {
+            throw ClipboardStoreError.execFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        return Int(sqlite3_column_int64(stmt, 0))
+    }
+
     static func withStore(_ body: (ClipboardStore, FixedClock, URL) throws -> Void) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LC-test-\(UUID().uuidString)", isDirectory: true)
@@ -50,12 +117,45 @@ struct LocalClipTestRunner {
                 settings: AppSettings(maxItems: 200, maxAgeDays: 7),
                 clock: clock
             )
+            store.pruneExecutor = { _ in }
             try body(store, clock, root)
         } catch {
             failures += 1
             print("FAIL store setup: \(error)")
         }
         try? FileManager.default.removeItem(at: root)
+    }
+
+    static func runRetentionPolicyTests() {
+        print("--- retention policy ---")
+        expect(AppSettings.retentionMaxItemOptions == [50, 100, 200, 500, 1000], "retention item presets")
+        expect(AppSettings.retentionMaxAgeDayOptions == [1, 3, 7, 14, 30, 0], "retention age presets")
+        expect(AppSettings.isValidRetention(maxItems: 200, maxAgeDays: 0), "permanent retention valid")
+        expect(!AppSettings.isValidRetention(maxItems: 0, maxAgeDays: 7), "zero item limit invalid")
+        expect(!AppSettings.isValidRetention(maxItems: 200, maxAgeDays: -1), "negative age invalid")
+        expect(AppSettings.isRetentionReduction(
+            fromMaxItems: 200, fromMaxAgeDays: 7,
+            toMaxItems: 100, toMaxAgeDays: 7
+        ), "lower item limit is reduction")
+        expect(AppSettings.isRetentionReduction(
+            fromMaxItems: 200, fromMaxAgeDays: 0,
+            toMaxItems: 200, toMaxAgeDays: 30
+        ), "permanent to finite age is reduction")
+        expect(!AppSettings.isRetentionReduction(
+            fromMaxItems: 200, fromMaxAgeDays: 7,
+            toMaxItems: 500, toMaxAgeDays: 0
+        ), "raising count and selecting permanent is not reduction")
+
+        withStore { store, clock, _ in
+            store.pruneExecutor = { _ in }
+            _ = try store.insertText("permanent")
+            clock.date = clock.date.addingTimeInterval(31 * 24 * 60 * 60)
+            store.updateSettings(AppSettings(maxItems: 200, maxAgeDays: 0))
+            try store.prune()
+            let items = try store.allItems()
+            expect(items.count == 1, "permanent retention skips age pruning")
+            expect(items.first?.textContent == "permanent", "permanent retention keeps old item")
+        }
     }
 
     static func runStoreTests() {
@@ -87,6 +187,64 @@ struct LocalClipTestRunner {
             let png = tinyPNG()
             expect(try store.insertImage(data: png) != nil, "first image")
             expect(try store.insertImage(data: png) == nil, "adjacent image dedupe")
+        }
+
+        withStore { store, _, root in
+            store.pruneExecutor = { _ in }
+            guard let item = try store.insertText("locked lookup") else {
+                expect(false, "locked lookup fixture inserted")
+                return
+            }
+            expect(try store.item(id: item.id)?.id == item.id, "locked lookup statement is warmed")
+
+            var lockingDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &lockingDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "locked lookup opens independent SQLite connection")
+                return
+            }
+            defer {
+                if let lockingDB {
+                    _ = sqlite3_exec(lockingDB, "ROLLBACK;", nil, nil, nil)
+                    sqlite3_close(lockingDB)
+                }
+            }
+            guard sqlite3_exec(lockingDB, "BEGIN EXCLUSIVE;", nil, nil, nil) == SQLITE_OK else {
+                expect(false, "locked lookup acquires exclusive SQLite lock")
+                return
+            }
+
+            var threwStepError = false
+            do {
+                _ = try store.item(id: item.id)
+            } catch let error as ClipboardStoreError {
+                if case .execFailed = error {
+                    threwStepError = true
+                }
+            }
+            expect(threwStepError, "locked public item lookup reports SQLite step failure")
+
+            expect(
+                sqlite3_exec(lockingDB, "ROLLBACK;", nil, nil, nil) == SQLITE_OK,
+                "locked lookup releases exclusive SQLite lock"
+            )
+            sqlite3_close(lockingDB)
+            lockingDB = nil
+            expect(try store.item(id: item.id)?.id == item.id, "locked lookup preserves the existing row")
+        }
+
+        withStore { store, _, _ in
+            let inFlightImageURL = store.imagesURL.appendingPathComponent("in-flight.png")
+            let inFlightThumbURL = store.thumbsURL.appendingPathComponent("in-flight.jpg")
+            try uniquePNG(9).write(to: inFlightImageURL)
+            try Data("in-flight-thumb".utf8).write(to: inFlightThumbURL)
+
+            try store.prune()
+            expect(
+                FileManager.default.fileExists(atPath: inFlightImageURL.path)
+                    && FileManager.default.fileExists(atPath: inFlightThumbURL.path),
+                "prune does not delete untracked in-flight assets"
+            )
         }
 
         withStore { store, _, _ in
@@ -126,6 +284,28 @@ struct LocalClipTestRunner {
             expect(items.first?.textContent == "new", "age keeps new")
         }
 
+        withStore { store, clock, _ in
+            store.pruneExecutor = { _ in }
+            store.updateSettings(AppSettings(maxItems: 2, maxAgeDays: 7))
+            _ = try store.insertText("old-1")
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("old-2")
+            clock.date = clock.date.addingTimeInterval(8 * 24 * 60 * 60)
+            _ = try store.insertText("recent-1")
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("recent-2")
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("recent-3")
+
+            try store.prune()
+            let items = try store.allItems()
+            expect(items.count == 2, "combined prune applies count to age-filtered records")
+            expect(
+                items.map(\.textContent) == ["recent-3", "recent-2"],
+                "combined prune preserves the newest records remaining after age pruning"
+            )
+        }
+
         // Insert must not wait for prune: hold pruneExecutor until we flush.
         withStore { store, clock, _ in
             store.updateSettings(AppSettings(maxItems: 2, maxAgeDays: 7))
@@ -158,6 +338,486 @@ struct LocalClipTestRunner {
             expect(!FileManager.default.fileExists(atPath: imageURL.path), "image file deleted")
             expect(!FileManager.default.fileExists(atPath: thumbURL.path), "thumb deleted")
             expect(try store.allItems().isEmpty, "row deleted")
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let outsideSentinelURL = root.deletingLastPathComponent()
+                .appendingPathComponent("LC-outside-\(UUID().uuidString)")
+            defer { try? fileManager.removeItem(at: outsideSentinelURL) }
+            try Data("outside sentinel".utf8).write(to: outsideSentinelURL)
+
+            let validOrphanURL = store.imagesURL.appendingPathComponent("valid-orphan.png")
+            try Data("valid orphan".utf8).write(to: validOrphanURL)
+            let doubledSeparatorURL = store.imagesURL.appendingPathComponent("doubled-separator.png")
+            try Data("doubled separator sentinel".utf8).write(to: doubledSeparatorURL)
+            let currentComponentURL = store.imagesURL.appendingPathComponent("current-component.png")
+            try Data("current component sentinel".utf8).write(to: currentComponentURL)
+            let controlledButInvalidURL = root.appendingPathComponent("not-an-asset.txt")
+            try Data("controlled sentinel".utf8).write(to: controlledButInvalidURL)
+            let nestedDirectoryURL = store.imagesURL.appendingPathComponent("nested", isDirectory: true)
+            try fileManager.createDirectory(at: nestedDirectoryURL, withIntermediateDirectories: false)
+            let nestedAssetURL = nestedDirectoryURL.appendingPathComponent("nested.png")
+            try Data("nested sentinel".utf8).write(to: nestedAssetURL)
+            let unknownParentURL = root
+                .appendingPathComponent("other", isDirectory: true)
+                .appendingPathComponent("unknown-parent.txt")
+            try fileManager.createDirectory(
+                at: unknownParentURL.deletingLastPathComponent(),
+                withIntermediateDirectories: false
+            )
+            try Data("unknown parent sentinel".utf8).write(to: unknownParentURL)
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "path safety test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+
+            let invalidPaths = [
+                "../\(outsideSentinelURL.lastPathComponent)",
+                outsideSentinelURL.path,
+                "images/",
+                "images//doubled-separator.png",
+                "images/./current-component.png",
+                "images/../not-an-asset.txt",
+                "images/nested/nested.png",
+                "other/unknown-parent.txt"
+            ]
+            for path in invalidPaths {
+                try executeSQL(
+                    pathDB,
+                    "INSERT INTO pending_asset_deletions (path) VALUES (?);",
+                    bindings: [path]
+                )
+            }
+            try executeSQL(
+                pathDB,
+                "INSERT INTO pending_asset_deletions (path) VALUES (?);",
+                bindings: ["images/valid-orphan.png"]
+            )
+
+            try store.prune()
+
+            expect(
+                fileManager.fileExists(atPath: outsideSentinelURL.path),
+                "invalid manifest traversal and absolute paths cannot delete an outside sentinel"
+            )
+            expect(
+                fileManager.fileExists(atPath: controlledButInvalidURL.path),
+                "invalid manifest parent traversal cannot delete a non-asset store file"
+            )
+            expect(
+                fileManager.fileExists(atPath: nestedAssetURL.path),
+                "invalid manifest path with extra components cannot delete a nested asset"
+            )
+            expect(
+                fileManager.fileExists(atPath: doubledSeparatorURL.path),
+                "invalid manifest doubled separator cannot delete its independently observed prefix"
+            )
+            expect(
+                fileManager.fileExists(atPath: currentComponentURL.path),
+                "invalid manifest current component cannot delete its independently observed prefix"
+            )
+            expect(
+                fileManager.fileExists(atPath: unknownParentURL.path),
+                "invalid manifest unknown parent cannot delete its independently observed file"
+            )
+            expect(
+                !fileManager.fileExists(atPath: validOrphanURL.path),
+                "valid manifest image path still removes the referenced asset"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM pending_asset_deletions;") == 0,
+                "invalid manifest paths are discarded instead of retried"
+            )
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let nulPrefixURL = store.imagesURL.appendingPathComponent("nul-prefix.png")
+            try Data("NUL prefix sentinel".utf8).write(to: nulPrefixURL)
+            let invalidUTF8PrefixURL = store.imagesURL.appendingPathComponent("invalid-utf8-prefix.png")
+            try Data("invalid UTF-8 prefix sentinel".utf8).write(to: invalidUTF8PrefixURL)
+            let validOrphanURL = store.imagesURL.appendingPathComponent("round-one-valid.png")
+            try Data("round one valid orphan".utf8).write(to: validOrphanURL)
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "raw manifest path test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+            try executeSQL(
+                pathDB,
+                """
+                INSERT INTO pending_asset_deletions (path)
+                VALUES ('images/nul-prefix.png' || char(0));
+                """
+            )
+            let invalidUTF8Bytes = Array("images/invalid-utf8-prefix.png".utf8) + [0xff]
+            let invalidUTF8Hex = invalidUTF8Bytes.map { String(format: "%02x", $0) }.joined()
+            try executeSQL(
+                pathDB,
+                """
+                INSERT INTO pending_asset_deletions (path)
+                VALUES (CAST(X'\(invalidUTF8Hex)' AS TEXT));
+                """
+            )
+            try executeSQL(
+                pathDB,
+                "INSERT INTO pending_asset_deletions (path) VALUES (?);",
+                bindings: ["images/round-one-valid.png"]
+            )
+
+            try store.prune()
+
+            expect(
+                fileManager.fileExists(atPath: nulPrefixURL.path),
+                "embedded-NUL manifest path cannot delete its valid prefix asset"
+            )
+            expect(
+                fileManager.fileExists(atPath: invalidUTF8PrefixURL.path),
+                "invalid-UTF8 manifest path cannot delete or alias its valid prefix asset"
+            )
+            expect(
+                !fileManager.fileExists(atPath: validOrphanURL.path),
+                "valid manifest cleanup remains enabled beside raw invalid paths"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM pending_asset_deletions;") == 0,
+                "embedded-NUL and invalid-UTF8 manifest rows are discarded by exact identity"
+            )
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let outsideDirectoryURL = root.deletingLastPathComponent()
+                .appendingPathComponent("LC-symlink-assets-\(UUID().uuidString)", isDirectory: true)
+            defer { try? fileManager.removeItem(at: outsideDirectoryURL) }
+            try fileManager.createDirectory(at: outsideDirectoryURL, withIntermediateDirectories: false)
+            let outsideSentinelURL = outsideDirectoryURL.appendingPathComponent("symlink-sentinel.png")
+            try Data("symlink sentinel".utf8).write(to: outsideSentinelURL)
+
+            try fileManager.removeItem(at: store.imagesURL)
+            try fileManager.createSymbolicLink(
+                at: store.imagesURL,
+                withDestinationURL: outsideDirectoryURL
+            )
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "symlink path safety test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+            try executeSQL(
+                pathDB,
+                "INSERT INTO pending_asset_deletions (path) VALUES (?);",
+                bindings: ["images/symlink-sentinel.png"]
+            )
+
+            try store.prune()
+
+            expect(
+                fileManager.fileExists(atPath: outsideSentinelURL.path),
+                "asset directory symlink outside the normalized store root cannot delete its target"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM pending_asset_deletions;") == 0,
+                "manifest path through an escaping asset-directory symlink is discarded"
+            )
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let item = try store.insertImage(data: uniquePNG(10))!
+            let originalImageURL = root.appendingPathComponent(item.imagePath!)
+            let originalThumbURL = root.appendingPathComponent(item.thumbPath!)
+            let outsideSentinelURL = root.deletingLastPathComponent()
+                .appendingPathComponent("LC-corrupt-row-\(UUID().uuidString)")
+            defer { try? fileManager.removeItem(at: outsideSentinelURL) }
+            try Data("corrupt row sentinel".utf8).write(to: outsideSentinelURL)
+            let invalidPath = "../\(outsideSentinelURL.lastPathComponent)"
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "corrupt item path test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+            try executeSQL(
+                pathDB,
+                "UPDATE items SET image_path = ? WHERE id = ?;",
+                bindings: [invalidPath, item.id]
+            )
+            try executeSQL(pathDB, "CREATE TABLE asset_enqueue_audit (path TEXT NOT NULL);")
+            try executeSQL(
+                pathDB,
+                """
+                CREATE TRIGGER audit_asset_enqueue
+                AFTER INSERT ON pending_asset_deletions
+                BEGIN
+                  INSERT INTO asset_enqueue_audit (path) VALUES (NEW.path);
+                END;
+                """
+            )
+
+            try store.delete(id: item.id)
+
+            expect(try store.item(id: item.id) == nil, "corrupt item row is still deleted")
+            expect(
+                fileManager.fileExists(atPath: outsideSentinelURL.path),
+                "corrupt item asset traversal cannot delete an outside sentinel"
+            )
+            expect(
+                try queryInt(
+                    pathDB,
+                    "SELECT COUNT(*) FROM asset_enqueue_audit WHERE path = ?;",
+                    bindings: [invalidPath]
+                ) == 0,
+                "corrupt item asset traversal is rejected before manifest insertion"
+            )
+            expect(
+                try queryInt(
+                    pathDB,
+                    "SELECT COUNT(*) FROM pending_asset_deletions WHERE path = ?;",
+                    bindings: [invalidPath]
+                ) == 0,
+                "corrupt item asset traversal leaves no invalid manifest entry"
+            )
+            expect(
+                fileManager.fileExists(atPath: originalImageURL.path),
+                "corrupt item cleanup does not infer or remove the lost original image path"
+            )
+            expect(
+                !fileManager.fileExists(atPath: originalThumbURL.path),
+                "valid thumbnail path from a corrupt item still cleans up normally"
+            )
+        }
+
+        withStore { store, _, root in
+            let fileManager = FileManager.default
+            let nulItem = try store.insertImage(data: uniquePNG(11))!
+            let invalidUTF8Item = try store.insertImage(data: uniquePNG(12))!
+            let protectedURLs = [
+                root.appendingPathComponent(nulItem.imagePath!),
+                root.appendingPathComponent(nulItem.thumbPath!),
+                root.appendingPathComponent(invalidUTF8Item.imagePath!),
+                root.appendingPathComponent(invalidUTF8Item.thumbPath!)
+            ]
+
+            var pathDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &pathDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "raw corrupt item path test opens an independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(pathDB) }
+            try executeSQL(
+                pathDB,
+                """
+                UPDATE items
+                SET image_path = image_path || char(0),
+                    thumb_path = thumb_path || char(0)
+                WHERE id = ?;
+                """,
+                bindings: [nulItem.id]
+            )
+            try executeSQL(
+                pathDB,
+                """
+                UPDATE items
+                SET image_path = image_path || CAST(X'ff' AS TEXT),
+                    thumb_path = thumb_path || CAST(X'ff' AS TEXT)
+                WHERE id = ?;
+                """,
+                bindings: [invalidUTF8Item.id]
+            )
+            try executeSQL(pathDB, "CREATE TABLE raw_asset_enqueue_audit (path);")
+            try executeSQL(
+                pathDB,
+                """
+                CREATE TRIGGER audit_raw_asset_enqueue
+                AFTER INSERT ON pending_asset_deletions
+                BEGIN
+                  INSERT INTO raw_asset_enqueue_audit (path) VALUES (NEW.path);
+                END;
+                """
+            )
+
+            try store.delete(id: nulItem.id)
+            try store.delete(id: invalidUTF8Item.id)
+
+            expect(
+                try store.item(id: nulItem.id) == nil && store.item(id: invalidUTF8Item.id) == nil,
+                "items with raw invalid image and thumbnail paths are still deleted"
+            )
+            expect(
+                protectedURLs.allSatisfy { fileManager.fileExists(atPath: $0.path) },
+                "embedded-NUL and invalid-UTF8 item paths cannot delete valid prefix image/thumb assets"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM raw_asset_enqueue_audit;") == 0,
+                "raw invalid item image and thumbnail paths are rejected before manifest insertion"
+            )
+            expect(
+                try queryInt(pathDB, "SELECT COUNT(*) FROM pending_asset_deletions;") == 0,
+                "raw invalid item paths create no pending manifest rows"
+            )
+        }
+
+        withStore { store, clock, root in
+            store.pruneExecutor = { _ in }
+            store.updateSettings(AppSettings(maxItems: 1, maxAgeDays: 0))
+            var inserted: [ClipboardItem] = []
+            for marker: UInt8 in 1...3 {
+                clock.date = clock.date.addingTimeInterval(1)
+                inserted.append(try store.insertImage(data: uniquePNG(marker))!)
+            }
+            let assetURLs = inserted.flatMap { item in
+                [
+                    root.appendingPathComponent(item.imagePath!),
+                    root.appendingPathComponent(item.thumbPath!)
+                ]
+            }
+
+            var faultDB: OpaquePointer?
+            let databasePath = root.appendingPathComponent("db.sqlite").path
+            guard sqlite3_open_v2(databasePath, &faultDB, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                expect(false, "atomic prune fault opens independent SQLite connection")
+                return
+            }
+            defer { sqlite3_close(faultDB) }
+            let faultSQL = """
+            CREATE TABLE prune_fault (attempts INTEGER NOT NULL);
+            INSERT INTO prune_fault (attempts) VALUES (0);
+            CREATE TRIGGER abort_second_prune_delete
+            BEFORE DELETE ON items
+            BEGIN
+              UPDATE prune_fault SET attempts = attempts + 1;
+              SELECT CASE WHEN (SELECT attempts FROM prune_fault) = 2
+                THEN RAISE(ABORT, 'forced second prune delete failure')
+              END;
+            END;
+            """
+            guard sqlite3_exec(faultDB, faultSQL, nil, nil, nil) == SQLITE_OK else {
+                expect(false, "atomic prune installs a real second-delete SQLite fault")
+                return
+            }
+
+            var pruneThrew = false
+            do {
+                try store.prune()
+            } catch let error as ClipboardStoreError {
+                if case .execFailed = error {
+                    pruneThrew = true
+                }
+            }
+            expect(pruneThrew, "second candidate SQLite failure is reported")
+            expect(try store.allItems().count == 3, "failed batch prune rolls back every candidate row")
+            expect(
+                assetURLs.allSatisfy { FileManager.default.fileExists(atPath: $0.path) },
+                "failed batch prune preserves every referenced image and thumbnail"
+            )
+        }
+
+        withStore { store, clock, root in
+            store.pruneExecutor = { _ in }
+            store.updateSettings(AppSettings(maxItems: 1, maxAgeDays: 0))
+            var inserted: [ClipboardItem] = []
+            for marker: UInt8 in 4...6 {
+                clock.date = clock.date.addingTimeInterval(1)
+                inserted.append(try store.insertImage(data: uniquePNG(marker))!)
+            }
+
+            try store.prune()
+            let remaining = try store.allItems()
+            expect(remaining.map(\.id) == [inserted[2].id], "successful batch prune keeps only the newest row")
+            for item in inserted.dropLast() {
+                expect(
+                    !FileManager.default.fileExists(
+                        atPath: root.appendingPathComponent(item.imagePath!).path
+                    ),
+                    "successful batch prune removes candidate image \(item.id)"
+                )
+                expect(
+                    !FileManager.default.fileExists(
+                        atPath: root.appendingPathComponent(item.thumbPath!).path
+                    ),
+                    "successful batch prune removes candidate thumbnail \(item.id)"
+                )
+            }
+            expect(
+                FileManager.default.fileExists(
+                    atPath: root.appendingPathComponent(inserted[2].imagePath!).path
+                ),
+                "successful batch prune preserves retained image"
+            )
+            expect(
+                FileManager.default.fileExists(
+                    atPath: root.appendingPathComponent(inserted[2].thumbPath!).path
+                ),
+                "successful batch prune preserves retained thumbnail"
+            )
+        }
+
+        withStore { store, clock, root in
+            store.pruneExecutor = { _ in }
+            store.updateSettings(AppSettings(maxItems: 1, maxAgeDays: 0))
+            clock.date = clock.date.addingTimeInterval(1)
+            let obsolete = try store.insertImage(data: uniquePNG(7))!
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertImage(data: uniquePNG(8))!
+            let obsoleteImageURL = root.appendingPathComponent(obsolete.imagePath!)
+            let obsoleteThumbURL = root.appendingPathComponent(obsolete.thumbPath!)
+
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: store.imagesURL.path
+                )
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: store.thumbsURL.path
+                )
+            }
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o500],
+                ofItemAtPath: store.imagesURL.path
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o500],
+                ofItemAtPath: store.thumbsURL.path
+            )
+
+            try store.prune()
+            expect(try store.item(id: obsolete.id) == nil, "database prune commits despite asset cleanup failure")
+            expect(
+                FileManager.default.fileExists(atPath: obsoleteImageURL.path)
+                    && FileManager.default.fileExists(atPath: obsoleteThumbURL.path),
+                "failed asset cleanup leaves retryable image and thumbnail orphans"
+            )
+
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: store.imagesURL.path
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: store.thumbsURL.path
+            )
+            try store.prune()
+            expect(
+                !FileManager.default.fileExists(atPath: obsoleteImageURL.path)
+                    && !FileManager.default.fileExists(atPath: obsoleteThumbURL.path),
+                "later prune retries and removes orphaned image and thumbnail assets"
+            )
         }
 
         // Thumbnails must not be full-size dumps (root cause of list jank).
@@ -394,6 +1054,279 @@ struct LocalClipTestRunner {
         try? FileManager.default.removeItem(at: work)
     }
 
+    static func runAppModelRetentionTests() {
+        print("--- appmodel retention update ---")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LC-retention-\(UUID().uuidString)", isDirectory: true)
+        let suiteName = "LocalClipTests.Retention.\(UUID().uuidString)"
+        guard let initialDefaults = UserDefaults(suiteName: suiteName) else {
+            expect(false, "appmodel retention defaults suite created")
+            return
+        }
+        initialDefaults.removePersistentDomain(forName: suiteName)
+        defer {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        final class State: @unchecked Sendable {
+            var setupError: String?
+            var finished = false
+        }
+        let state = State()
+
+        DispatchQueue.main.async {
+            Task { @MainActor in
+                guard let userDefaults = UserDefaults(suiteName: suiteName) else {
+                    state.setupError = "could not recreate defaults suite"
+                    state.finished = true
+                    return
+                }
+                do {
+                    let defaultsKey = "LocalClip.AppSettings.v1"
+                    let invalidPersisted = PersistedSettingsFixture(
+                        pollIntervalMs: 725,
+                        maxItems: 0,
+                        maxAgeDays: 23,
+                        plainTextPaste: true,
+                        launchAtLogin: false
+                    )
+                    userDefaults.set(
+                        try JSONEncoder().encode(invalidPersisted),
+                        forKey: defaultsKey
+                    )
+                    let sanitized = try AppModel(storeRoot: root, userDefaults: userDefaults)
+                    expect(
+                        sanitized.settings.maxItems == 200
+                            && sanitized.settings.maxAgeDays == 23,
+                        "invalid persisted item limit is sanitized without replacing valid non-preset age"
+                    )
+                    expect(
+                        sanitized.store.settings.maxItems == 200
+                            && sanitized.store.settings.maxAgeDays == 23,
+                        "store is constructed with sanitized retention"
+                    )
+                    expect(
+                        sanitized.settings.pollIntervalMs == 725
+                            && sanitized.settings.plainTextPaste
+                            && !sanitized.settings.launchAtLogin,
+                        "sanitizing retention preserves unrelated persisted settings"
+                    )
+                    let rewrittenData = userDefaults.data(forKey: defaultsKey)
+                    let rewritten = try rewrittenData.map {
+                        try JSONDecoder().decode(PersistedSettingsFixture.self, from: $0)
+                    }
+                    expect(
+                        rewritten?.maxItems == 200 && rewritten?.maxAgeDays == 23,
+                        "sanitized retention is rewritten to defaults"
+                    )
+                    expect(
+                        rewritten?.pollIntervalMs == 725
+                            && rewritten?.plainTextPaste == true
+                            && rewritten?.launchAtLogin == false,
+                        "rewritten defaults preserve unrelated settings"
+                    )
+
+                    let invalidAgePersisted = PersistedSettingsFixture(
+                        pollIntervalMs: 725,
+                        maxItems: 321,
+                        maxAgeDays: -1,
+                        plainTextPaste: true,
+                        launchAtLogin: false
+                    )
+                    userDefaults.set(
+                        try JSONEncoder().encode(invalidAgePersisted),
+                        forKey: defaultsKey
+                    )
+                    let ageSanitized = try AppModel(storeRoot: root, userDefaults: userDefaults)
+                    expect(
+                        ageSanitized.settings.maxItems == 321
+                            && ageSanitized.settings.maxAgeDays == 7,
+                        "invalid persisted age is sanitized without replacing valid non-preset item limit"
+                    )
+                    expect(
+                        ageSanitized.store.settings.maxItems == 321
+                            && ageSanitized.store.settings.maxAgeDays == 7,
+                        "store is constructed with sanitized age"
+                    )
+                    expect(
+                        ageSanitized.settings.pollIntervalMs == 725
+                            && ageSanitized.settings.plainTextPaste
+                            && !ageSanitized.settings.launchAtLogin,
+                        "sanitizing age preserves unrelated persisted settings"
+                    )
+                    let rewrittenAgeData = userDefaults.data(forKey: defaultsKey)
+                    let rewrittenAge = try rewrittenAgeData.map {
+                        try JSONDecoder().decode(PersistedSettingsFixture.self, from: $0)
+                    }
+                    expect(
+                        rewrittenAge?.maxItems == 321 && rewrittenAge?.maxAgeDays == 7,
+                        "sanitized age is rewritten to persisted settings"
+                    )
+
+                    let validNonPreset = PersistedSettingsFixture(
+                        pollIntervalMs: 725,
+                        maxItems: 321,
+                        maxAgeDays: 9,
+                        plainTextPaste: true,
+                        launchAtLogin: false
+                    )
+                    userDefaults.set(
+                        try JSONEncoder().encode(validNonPreset),
+                        forKey: defaultsKey
+                    )
+                    let model = try AppModel(storeRoot: root, userDefaults: userDefaults)
+                    expect(
+                        model.settings.maxItems == 321 && model.settings.maxAgeDays == 9,
+                        "valid non-preset retention is preserved"
+                    )
+                    model.store.pruneExecutor = { _ in }
+                    _ = try model.store.insertText("retention-one")
+                    _ = try model.store.insertText("retention-two")
+                    _ = try model.store.insertText("retention-three")
+                    model.refresh()
+                    expect(model.items.count == 3, "retention test seeds three model items")
+
+                    let updated = await model.updateRetention(maxItems: 2, maxAgeDays: 0)
+                    expect(updated, "valid retention update succeeds")
+                    expect(
+                        model.settings.maxItems == 2 && model.settings.maxAgeDays == 0,
+                        "model retention settings update to 2/0"
+                    )
+                    expect(
+                        model.store.settings.maxItems == 2 && model.store.settings.maxAgeDays == 0,
+                        "store retention settings update to 2/0"
+                    )
+                    expect(model.items.count == 2, "reduction immediately refreshes model to two items")
+                    expect(try model.store.allItems().count == 2, "reduction immediately prunes SQLite to two rows")
+                    expect(!model.isUpdatingRetention, "retention update state resets after pruning")
+
+                    let restored = try AppModel(storeRoot: root, userDefaults: userDefaults)
+                    expect(
+                        restored.settings.maxItems == 2 && restored.settings.maxAgeDays == 0,
+                        "new model restores persisted retention settings"
+                    )
+
+                    let rejected = await restored.updateRetention(maxItems: 0, maxAgeDays: 7)
+                    expect(!rejected, "invalid retention update is rejected")
+                    expect(
+                        restored.settings.maxItems == 2 && restored.settings.maxAgeDays == 0,
+                        "invalid retention update preserves model settings"
+                    )
+                    expect(
+                        restored.store.settings.maxItems == 2 && restored.store.settings.maxAgeDays == 0,
+                        "invalid retention update preserves store settings"
+                    )
+                    restored.plainTextPaste = false
+
+                    var exclusiveLock: OpaquePointer?
+                    let databasePath = root.appendingPathComponent("db.sqlite").path
+                    expect(
+                        sqlite3_open_v2(databasePath, &exclusiveLock, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
+                        "retention rollback test opens an independent SQLite connection"
+                    )
+                    defer { sqlite3_close(exclusiveLock) }
+                    expect(
+                        sqlite3_exec(exclusiveLock, "BEGIN EXCLUSIVE;", nil, nil, nil) == SQLITE_OK,
+                        "retention rollback test acquires SQLite exclusive lock"
+                    )
+
+                    var changedPlainTextPasteDuringUpdate = false
+                    let retentionUpdateObserver = restored.$isUpdatingRetention.sink { isUpdating in
+                        guard isUpdating else { return }
+                        changedPlainTextPasteDuringUpdate = true
+                        restored.plainTextPaste = true
+                    }
+                    let failedReduction = await restored.updateRetention(maxItems: 1, maxAgeDays: 0)
+                    retentionUpdateObserver.cancel()
+                    expect(!failedReduction, "locked SQLite prune reports retention update failure")
+                    expect(
+                        changedPlainTextPasteDuringUpdate,
+                        "unrelated setting changes after retention update starts"
+                    )
+                    expect(
+                        restored.settings.maxItems == 2 && restored.settings.maxAgeDays == 0,
+                        "failed prune restores prior model retention settings"
+                    )
+                    expect(
+                        restored.store.settings.maxItems == 2 && restored.store.settings.maxAgeDays == 0,
+                        "failed prune restores prior store retention settings"
+                    )
+                    let rollbackData = userDefaults.data(forKey: defaultsKey)
+                    let rollbackSettings = try rollbackData.map {
+                        try JSONDecoder().decode(PersistedSettingsFixture.self, from: $0)
+                    }
+                    expect(
+                        rollbackSettings?.maxItems == 2 && rollbackSettings?.maxAgeDays == 0,
+                        "failed prune restores prior persisted retention settings"
+                    )
+                    expect(
+                        restored.plainTextPaste && restored.settings.plainTextPaste,
+                        "failed prune preserves current published and model unrelated setting"
+                    )
+                    expect(
+                        restored.store.settings.plainTextPaste,
+                        "failed prune preserves current store unrelated setting"
+                    )
+                    expect(
+                        rollbackSettings?.plainTextPaste == true,
+                        "failed prune preserves current persisted unrelated setting"
+                    )
+                    expect(
+                        restored.statusMessage?.hasPrefix("清理历史记录失败：") == true,
+                        "failed prune preserves retention failure status"
+                    )
+                    expect(!restored.isUpdatingRetention, "failed prune resets retention updating state")
+                    expect(
+                        sqlite3_exec(exclusiveLock, "ROLLBACK;", nil, nil, nil) == SQLITE_OK,
+                        "retention rollback test releases SQLite exclusive lock"
+                    )
+                    sqlite3_close(exclusiveLock)
+                    exclusiveLock = nil
+
+                    var overlappingUpdate: Task<Bool, Never>?
+                    var observedUpdating = false
+                    let overlapObserver = restored.$isUpdatingRetention.sink { isUpdating in
+                        guard isUpdating, overlappingUpdate == nil else { return }
+                        observedUpdating = true
+                        overlappingUpdate = Task { @MainActor in
+                            await restored.updateRetention(maxItems: 2, maxAgeDays: 0)
+                        }
+                    }
+                    let firstUpdateSucceeded = await restored.updateRetention(maxItems: 1, maxAgeDays: 0)
+                    overlapObserver.cancel()
+                    expect(observedUpdating, "first retention reduction enters updating state")
+                    if let overlappingUpdate {
+                        let overlappingSucceeded = await overlappingUpdate.value
+                        expect(!overlappingSucceeded, "overlapping retention update is rejected")
+                    } else {
+                        expect(false, "overlapping retention update is scheduled from updating publication")
+                    }
+                    expect(firstUpdateSucceeded, "first overlapping retention update succeeds")
+                    expect(
+                        restored.settings.maxItems == 1 && restored.settings.maxAgeDays == 0,
+                        "rejected overlapping update cannot overwrite active retention settings"
+                    )
+                    expect(!restored.isUpdatingRetention, "updating state resets after overlap rejection")
+                } catch {
+                    state.setupError = "\(error)"
+                }
+                state.finished = true
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(5)
+        while !state.finished, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        if let error = state.setupError {
+            failures += 1
+            print("FAIL appmodel retention setup: \(error)")
+        } else if !state.finished {
+            expect(false, "appmodel retention async test completed")
+        }
+    }
+
     /// Search box must not run a synchronous full refresh on every keystroke / IME update.
     /// Debounced async load: immediate assignment leaves items unchanged; final query wins.
     static func runAppModelSearchTests() {
@@ -416,6 +1349,7 @@ struct LocalClipTestRunner {
                 do {
                     let model = try AppModel(storeRoot: root)
                     model.searchDebounceNanoseconds = 50_000_000
+                    model.store.pruneExecutor = { _ in }
                     _ = try model.store.insertText("Hello Alpha")
                     _ = try model.store.insertText("other beta")
                     _ = try model.store.insertImage(data: tinyPNG())

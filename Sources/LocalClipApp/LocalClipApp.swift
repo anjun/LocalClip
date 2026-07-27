@@ -511,6 +511,14 @@ struct HistoryRow: View {
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @State private var launchAtLogin: Bool = true
+    @State private var retentionMaxItems = AppSettings.default.maxItems
+    @State private var retentionMaxAgeDays = AppSettings.default.maxAgeDays
+    @State private var pendingRetention: (maxItems: Int, maxAgeDays: Int)?
+    @State private var showsRetentionConfirmation = false
+    /// Local gate covering the gap before `model.isUpdatingRetention` flips true.
+    @State private var isApplyingRetention = false
+    /// Bumped to force Menu pickers to re-sync when selection is rejected/cancelled.
+    @State private var retentionPickerEpoch = 0
 
     var body: some View {
         ScrollView {
@@ -556,9 +564,38 @@ struct SettingsView: View {
                 }
 
                 settingsGroup(title: "保留", subtitle: "超出后自动清理记录与图片文件") {
-                    Text("最多 200 条 · 保留 7 天")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(LCTheme.textPrimary)
+                    VStack(spacing: 12) {
+                        settingsRow {
+                            Text("最多保留")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(LCTheme.textPrimary)
+                            Spacer()
+                            Picker("最多保留", selection: retentionMaxItemsBinding) {
+                                ForEach(retentionMaxItemChoices, id: \.self) { maxItems in
+                                    Text("\(maxItems) 条").tag(maxItems)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .id("retention-items-\(retentionMaxItems)-\(retentionPickerEpoch)")
+                            .disabled(isRetentionControlsDisabled)
+                        }
+
+                        settingsRow {
+                            Text("保留时长")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(LCTheme.textPrimary)
+                            Spacer()
+                            Picker("保留时长", selection: retentionMaxAgeDaysBinding) {
+                                ForEach(retentionMaxAgeDayChoices, id: \.self) { maxAgeDays in
+                                    Text(maxAgeDays == 0 ? "永久" : "\(maxAgeDays) 天")
+                                        .tag(maxAgeDays)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .id("retention-age-\(retentionMaxAgeDays)-\(retentionPickerEpoch)")
+                            .disabled(isRetentionControlsDisabled)
+                        }
+                    }
                 }
 
                 settingsGroup(title: "更新", subtitle: "仅在点击时访问 GitHub Releases") {
@@ -623,7 +660,91 @@ struct SettingsView: View {
         .frame(minWidth: 480, idealWidth: 520, minHeight: 560, idealHeight: 640)
         .onAppear {
             launchAtLogin = model.settings.launchAtLogin
+            retentionMaxItems = model.settings.maxItems
+            retentionMaxAgeDays = model.settings.maxAgeDays
             model.refreshAccessibility()
+        }
+        .alert("清理并应用新的保留设置？", isPresented: $showsRetentionConfirmation) {
+            Button("取消", role: .cancel) {
+                pendingRetention = nil
+                retentionPickerEpoch += 1
+            }
+            Button("清理并应用", role: .destructive) {
+                guard let pendingRetention else { return }
+                self.pendingRetention = nil
+                applyRetention(
+                    maxItems: pendingRetention.maxItems,
+                    maxAgeDays: pendingRetention.maxAgeDays
+                )
+            }
+        } message: {
+            Text("缩短保留范围会立即清理不符合新设置的历史记录和图片文件。")
+        }
+    }
+
+    private var isRetentionControlsDisabled: Bool {
+        isApplyingRetention || model.isUpdatingRetention
+    }
+
+    private var retentionMaxItemsBinding: Binding<Int> {
+        Binding(
+            get: { retentionMaxItems },
+            set: { proposeRetention(maxItems: $0, maxAgeDays: retentionMaxAgeDays) }
+        )
+    }
+
+    private var retentionMaxAgeDaysBinding: Binding<Int> {
+        Binding(
+            get: { retentionMaxAgeDays },
+            set: { proposeRetention(maxItems: retentionMaxItems, maxAgeDays: $0) }
+        )
+    }
+
+    private var retentionMaxItemChoices: [Int] {
+        retentionOptions(AppSettings.retentionMaxItemOptions, including: retentionMaxItems)
+    }
+
+    private var retentionMaxAgeDayChoices: [Int] {
+        retentionOptions(AppSettings.retentionMaxAgeDayOptions, including: retentionMaxAgeDays)
+    }
+
+    /// Keep preset order (e.g. 永久 last); only append a non-preset current value.
+    private func retentionOptions(_ presets: [Int], including currentValue: Int) -> [Int] {
+        if presets.contains(currentValue) {
+            return presets
+        }
+        return presets + [currentValue]
+    }
+
+    private func proposeRetention(maxItems: Int, maxAgeDays: Int) {
+        guard !isRetentionControlsDisabled else { return }
+        if AppSettings.isRetentionReduction(
+            fromMaxItems: retentionMaxItems,
+            fromMaxAgeDays: retentionMaxAgeDays,
+            toMaxItems: maxItems,
+            toMaxAgeDays: maxAgeDays
+        ) {
+            pendingRetention = (maxItems, maxAgeDays)
+            showsRetentionConfirmation = true
+        } else {
+            applyRetention(maxItems: maxItems, maxAgeDays: maxAgeDays)
+        }
+    }
+
+    private func applyRetention(maxItems: Int, maxAgeDays: Int) {
+        guard !isRetentionControlsDisabled else { return }
+        isApplyingRetention = true
+        retentionMaxItems = maxItems
+        retentionMaxAgeDays = maxAgeDays
+
+        Task { @MainActor in
+            defer { isApplyingRetention = false }
+            let didUpdate = await model.updateRetention(maxItems: maxItems, maxAgeDays: maxAgeDays)
+            if !didUpdate {
+                retentionMaxItems = model.settings.maxItems
+                retentionMaxAgeDays = model.settings.maxAgeDays
+                retentionPickerEpoch += 1
+            }
         }
     }
 

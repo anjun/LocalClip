@@ -1,10 +1,21 @@
 import Foundation
 import SQLite3
 
-public enum ClipboardStoreError: Error, Equatable {
+public enum ClipboardStoreError: Error, Equatable, LocalizedError {
     case openFailed(String)
     case execFailed(String)
     case invalidCapture
+
+    public var errorDescription: String? {
+        switch self {
+        case .openFailed(let message):
+            return "无法打开数据库：\(message)"
+        case .execFailed(let message):
+            return message
+        case .invalidCapture:
+            return "无效的剪贴板捕获"
+        }
+    }
 }
 
 /// Local SQLite-backed clipboard history. Zero network.
@@ -55,6 +66,9 @@ public final class ClipboardStore: @unchecked Sendable {
         );
         CREATE INDEX IF NOT EXISTS idx_items_created_at ON items(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_items_kind_created ON items(kind, created_at DESC);
+        CREATE TABLE IF NOT EXISTS pending_asset_deletions (
+          path TEXT PRIMARY KEY NOT NULL
+        );
         """)
     }
 
@@ -222,9 +236,10 @@ public final class ClipboardStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let items = try fetchLocked(query: nil)
-        for item in items {
-            try deleteLocked(id: item.id)
+        if !items.isEmpty {
+            try deleteItemsInTransactionLocked(items)
         }
+        retryPendingAssetCleanupLocked()
     }
 
     // MARK: - Private insert
@@ -328,58 +343,288 @@ public final class ClipboardStore: @unchecked Sendable {
     }
 
     private func pruneLocked() throws {
-        let now = clock.now()
-        let maxAge = TimeInterval(settings.maxAgeDays * 24 * 60 * 60)
-        let cutoff = now.addingTimeInterval(-maxAge)
+        var candidates: [ClipboardItem] = []
+        var candidateIDs = Set<String>()
 
-        // Age prune
-        let aged = try fetchIdsOlderThanLocked(cutoff)
-        for id in aged {
-            try deleteLocked(id: id)
+        // Age then count: only load rows that are prune candidates (not the full table).
+        let minCreatedAtForCount: Date?
+        if settings.maxAgeDays > 0 {
+            let maxAge = TimeInterval(settings.maxAgeDays) * 24 * 60 * 60
+            let cutoff = clock.now().addingTimeInterval(-maxAge)
+            for item in try fetchItemsOlderThanLocked(cutoff) {
+                if candidateIDs.insert(item.id).inserted {
+                    candidates.append(item)
+                }
+            }
+            minCreatedAtForCount = cutoff
+        } else {
+            minCreatedAtForCount = nil
         }
 
-        // Count prune: keep newest maxItems
-        let all = try fetchLocked(query: nil) // newest first
-        if all.count > settings.maxItems {
-            let excess = all.suffix(from: settings.maxItems)
-            for item in excess {
-                try deleteLocked(id: item.id)
+        for item in try fetchCountPruneCandidatesLocked(
+            minCreatedAt: minCreatedAtForCount,
+            keepNewest: settings.maxItems
+        ) {
+            if candidateIDs.insert(item.id).inserted {
+                candidates.append(item)
+            }
+        }
+
+        if !candidates.isEmpty {
+            try deleteItemsInTransactionLocked(candidates)
+        }
+        retryPendingAssetCleanupLocked()
+    }
+
+    /// Rows older than the retention cutoff (newest first).
+    private func fetchItemsOlderThanLocked(_ cutoff: Date) throws -> [ClipboardItem] {
+        let sql = """
+        SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+        FROM items
+        WHERE created_at < ?
+        ORDER BY created_at DESC;
+        """
+        return try fetchItemsWithSQLLocked(sql) { stmt in
+            sqlite3_bind_double(stmt, 1, cutoff.timeIntervalSince1970)
+        }
+    }
+
+    /// Excess rows beyond `keepNewest` among items that survive age filtering.
+    /// Uses SQL OFFSET so retained rows are never materialized.
+    private func fetchCountPruneCandidatesLocked(
+        minCreatedAt: Date?,
+        keepNewest: Int
+    ) throws -> [ClipboardItem] {
+        guard keepNewest > 0 else { return [] }
+        let sql: String
+        if minCreatedAt != nil {
+            sql = """
+            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+            FROM items
+            WHERE created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT -1 OFFSET ?;
+            """
+        } else {
+            sql = """
+            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+            FROM items
+            ORDER BY created_at DESC
+            LIMIT -1 OFFSET ?;
+            """
+        }
+        return try fetchItemsWithSQLLocked(sql) { stmt in
+            if let minCreatedAt {
+                sqlite3_bind_double(stmt, 1, minCreatedAt.timeIntervalSince1970)
+                sqlite3_bind_int64(stmt, 2, Int64(keepNewest))
+            } else {
+                sqlite3_bind_int64(stmt, 1, Int64(keepNewest))
             }
         }
     }
 
-    private func fetchIdsOlderThanLocked(_ cutoff: Date) throws -> [String] {
-        let sql = "SELECT id FROM items WHERE created_at < ?;"
+    private func fetchItemsWithSQLLocked(
+        _ sql: String,
+        bind: (OpaquePointer?) throws -> Void
+    ) throws -> [ClipboardItem] {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             throw ClipboardStoreError.execFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_double(stmt, 1, cutoff.timeIntervalSince1970)
-        var ids: [String] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            if let c = sqlite3_column_text(stmt, 0) {
-                ids.append(String(cString: c))
+        try bind(stmt)
+        var items: [ClipboardItem] = []
+        while true {
+            let result = sqlite3_step(stmt)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else {
+                throw ClipboardStoreError.execFailed(lastError())
             }
+            items.append(rowToItem(stmt))
         }
-        return ids
+        return items
     }
 
     private func deleteLocked(id: String) throws {
         guard let item = try fetchByIdLocked(id) else { return }
-        if let rel = item.imagePath {
-            try? FileManager.default.removeItem(at: rootURL.appendingPathComponent(rel))
+        try deleteItemsInTransactionLocked([item])
+        retryPendingAssetCleanupLocked()
+    }
+
+    private func deleteItemsInTransactionLocked(_ items: [ClipboardItem]) throws {
+        try exec("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            try enqueueAssetDeletionsLocked(items)
+            try deleteRowsLocked(items.map(\.id))
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
         }
-        if let rel = item.thumbPath {
-            try? FileManager.default.removeItem(at: rootURL.appendingPathComponent(rel))
+    }
+
+    private func enqueueAssetDeletionsLocked(_ items: [ClipboardItem]) throws {
+        var paths = Set<String>()
+        for item in items {
+            if let imagePath = item.imagePath,
+               controlledAssetURL(for: imagePath) != nil {
+                paths.insert(imagePath)
+            }
+            if let thumbPath = item.thumbPath,
+               controlledAssetURL(for: thumbPath) != nil {
+                paths.insert(thumbPath)
+            }
         }
+        guard !paths.isEmpty else { return }
+
+        let sql = "INSERT OR IGNORE INTO pending_asset_deletions (path) VALUES (?);"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        for path in paths {
+            guard sqlite3_reset(stmt) == SQLITE_OK else {
+                throw ClipboardStoreError.execFailed(lastError())
+            }
+            sqlite3_clear_bindings(stmt)
+            bindText(stmt, 1, path)
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw ClipboardStoreError.execFailed(lastError())
+            }
+        }
+    }
+
+    private func deleteRowsLocked(_ ids: [String]) throws {
         let sql = "DELETE FROM items WHERE id = ?;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             throw ClipboardStoreError.execFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, id)
+
+        for id in ids {
+            guard sqlite3_reset(stmt) == SQLITE_OK else {
+                throw ClipboardStoreError.execFailed(lastError())
+            }
+            sqlite3_clear_bindings(stmt)
+            bindText(stmt, 1, id)
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw ClipboardStoreError.execFailed(lastError())
+            }
+        }
+    }
+
+    private func retryPendingAssetCleanupLocked() {
+        let deletions: [PendingAssetDeletion]
+        do {
+            deletions = try fetchPendingAssetDeletionsLocked()
+        } catch {
+            NSLog("LocalClip pending asset cleanup skipped: \(error)")
+            return
+        }
+
+        for deletion in deletions {
+            guard let path = deletion.path,
+                  let url = controlledAssetURL(for: path) else {
+                do {
+                    try removePendingAssetDeletionLocked(rowID: deletion.rowID)
+                } catch {
+                    NSLog(
+                        "LocalClip invalid pending asset cleanup completion failed "
+                            + "for row \(deletion.rowID): \(error)"
+                    )
+                }
+                continue
+            }
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch {
+                    NSLog("LocalClip asset cleanup failed for \(url.path): \(error)")
+                    continue
+                }
+            }
+            do {
+                try removePendingAssetDeletionLocked(rowID: deletion.rowID)
+            } catch {
+                NSLog("LocalClip pending asset cleanup completion failed for \(path): \(error)")
+            }
+        }
+    }
+
+    private func controlledAssetURL(for path: String) -> URL? {
+        guard !path.utf8.contains(0),
+              !(path as NSString).isAbsolutePath else {
+            return nil
+        }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count == 2,
+              components[0] == "images" || components[0] == "thumbs",
+              !components[1].isEmpty,
+              components[1] != ".",
+              components[1] != ".." else {
+            return nil
+        }
+
+        let normalizedRoot = rootURL.standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let requestedParent = rootURL.appendingPathComponent(
+            String(components[0]),
+            isDirectory: true
+        )
+        let resolvedParent = requestedParent.standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootComponents = normalizedRoot.pathComponents
+        let parentComponents = resolvedParent.pathComponents
+        guard parentComponents.count > rootComponents.count,
+              Array(parentComponents.prefix(rootComponents.count)) == rootComponents else {
+            return nil
+        }
+
+        return requestedParent.appendingPathComponent(String(components[1]))
+    }
+
+    private struct PendingAssetDeletion {
+        let rowID: Int64
+        let path: String?
+    }
+
+    private func fetchPendingAssetDeletionsLocked() throws -> [PendingAssetDeletion] {
+        let sql = "SELECT rowid, path FROM pending_asset_deletions ORDER BY rowid;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var deletions: [PendingAssetDeletion] = []
+        while true {
+            switch sqlite3_step(stmt) {
+            case SQLITE_ROW:
+                deletions.append(PendingAssetDeletion(
+                    rowID: sqlite3_column_int64(stmt, 0),
+                    path: strictTextColumn(stmt, 1)
+                ))
+            case SQLITE_DONE:
+                return deletions
+            default:
+                throw ClipboardStoreError.execFailed(lastError())
+            }
+        }
+    }
+
+    private func removePendingAssetDeletionLocked(rowID: Int64) throws {
+        let sql = "DELETE FROM pending_asset_deletions WHERE rowid = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, rowID)
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw ClipboardStoreError.execFailed(lastError())
         }
@@ -396,10 +641,14 @@ public final class ClipboardStore: @unchecked Sendable {
         }
         defer { sqlite3_finalize(stmt) }
         bindText(stmt, 1, id)
-        if sqlite3_step(stmt) == SQLITE_ROW {
+        switch sqlite3_step(stmt) {
+        case SQLITE_ROW:
             return rowToItem(stmt)
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw ClipboardStoreError.execFailed(lastError())
         }
-        return nil
     }
 
     private func fetchLocked(query: String?) throws -> [ClipboardItem] {
@@ -427,7 +676,12 @@ public final class ClipboardStore: @unchecked Sendable {
             bindText(stmt, 1, query)
         }
         var items: [ClipboardItem] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        while true {
+            let result = sqlite3_step(stmt)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else {
+                throw ClipboardStoreError.execFailed(lastError())
+            }
             items.append(rowToItem(stmt))
         }
         return items
@@ -435,8 +689,7 @@ public final class ClipboardStore: @unchecked Sendable {
 
     private func rowToItem(_ stmt: OpaquePointer?) -> ClipboardItem {
         func colText(_ i: Int32) -> String? {
-            guard let c = sqlite3_column_text(stmt, i) else { return nil }
-            return String(cString: c)
+            strictTextColumn(stmt, i)
         }
         let id = colText(0) ?? UUID().uuidString
         let kind = ClipboardItemKind(rawValue: colText(1) ?? "text") ?? .text
@@ -457,6 +710,17 @@ public final class ClipboardStore: @unchecked Sendable {
             thumbPath: thumbPath,
             sourceBundleId: source,
             byteSize: size
+        )
+    }
+
+    private func strictTextColumn(_ stmt: OpaquePointer?, _ index: Int32) -> String? {
+        guard sqlite3_column_type(stmt, index) != SQLITE_NULL else { return nil }
+        guard let bytes = sqlite3_column_text(stmt, index) else { return nil }
+        let byteCount = Int(sqlite3_column_bytes(stmt, index))
+        guard byteCount > 0 else { return "" }
+        return String(
+            bytes: UnsafeBufferPointer(start: bytes, count: byteCount),
+            encoding: .utf8
         )
     }
 
