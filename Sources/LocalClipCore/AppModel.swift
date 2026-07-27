@@ -383,6 +383,7 @@ public final class AppModel: ObservableObject {
             toMaxItems: maxItems,
             toMaxAgeDays: maxAgeDays
         )
+        let previousSettings = settings
         settings.maxItems = maxItems
         settings.maxAgeDays = maxAgeDays
         persistSettings()
@@ -399,6 +400,8 @@ public final class AppModel: ObservableObject {
             refresh()
             return true
         } catch {
+            settings = previousSettings
+            persistSettings()
             statusMessage = "清理历史记录失败：\(error.localizedDescription)"
             return false
         }

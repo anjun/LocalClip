@@ -1,5 +1,6 @@
 import Foundation
 import LocalClipCore
+import SQLite3
 
 private struct PersistedSettingsFixture: Codable {
     var pollIntervalMs: Int
@@ -598,6 +599,48 @@ struct LocalClipTestRunner {
                         restored.store.settings.maxItems == 2 && restored.store.settings.maxAgeDays == 0,
                         "invalid retention update preserves store settings"
                     )
+
+                    var exclusiveLock: OpaquePointer?
+                    let databasePath = root.appendingPathComponent("db.sqlite").path
+                    expect(
+                        sqlite3_open_v2(databasePath, &exclusiveLock, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
+                        "retention rollback test opens an independent SQLite connection"
+                    )
+                    defer { sqlite3_close(exclusiveLock) }
+                    expect(
+                        sqlite3_exec(exclusiveLock, "BEGIN EXCLUSIVE;", nil, nil, nil) == SQLITE_OK,
+                        "retention rollback test acquires SQLite exclusive lock"
+                    )
+
+                    let failedReduction = await restored.updateRetention(maxItems: 1, maxAgeDays: 0)
+                    expect(!failedReduction, "locked SQLite prune reports retention update failure")
+                    expect(
+                        restored.settings.maxItems == 2 && restored.settings.maxAgeDays == 0,
+                        "failed prune restores prior model retention settings"
+                    )
+                    expect(
+                        restored.store.settings.maxItems == 2 && restored.store.settings.maxAgeDays == 0,
+                        "failed prune restores prior store retention settings"
+                    )
+                    let rollbackData = userDefaults.data(forKey: defaultsKey)
+                    let rollbackSettings = try rollbackData.map {
+                        try JSONDecoder().decode(PersistedSettingsFixture.self, from: $0)
+                    }
+                    expect(
+                        rollbackSettings?.maxItems == 2 && rollbackSettings?.maxAgeDays == 0,
+                        "failed prune restores prior persisted retention settings"
+                    )
+                    expect(
+                        restored.statusMessage?.hasPrefix("清理历史记录失败：") == true,
+                        "failed prune preserves retention failure status"
+                    )
+                    expect(!restored.isUpdatingRetention, "failed prune resets retention updating state")
+                    expect(
+                        sqlite3_exec(exclusiveLock, "ROLLBACK;", nil, nil, nil) == SQLITE_OK,
+                        "retention rollback test releases SQLite exclusive lock"
+                    )
+                    sqlite3_close(exclusiveLock)
+                    exclusiveLock = nil
 
                     restored.store.pruneExecutor = { _ in }
                     for index in 0..<500 {

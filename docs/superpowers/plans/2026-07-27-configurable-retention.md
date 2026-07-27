@@ -4,7 +4,7 @@
 
 **Goal:** Replace the hard-coded retention summary with persisted count/age selectors, including permanent age retention and confirmed immediate cleanup when limits are reduced.
 
-**Architecture:** Keep `AppSettings` as the source of retention values and add pure validation/reduction helpers there. `AppModel` owns the mutation boundary, persists through its existing JSON payload, synchronizes `ClipboardStore`, and runs destructive pruning off the main actor. `SettingsView` owns only draft/pending UI state and delegates accepted changes to the model.
+**Architecture:** Keep `AppSettings` as the source of retention values and add pure validation/reduction helpers there. `AppModel` owns the mutation boundary, persists through its existing JSON payload, synchronizes `ClipboardStore`, and runs destructive pruning off the main actor. A failed reduction rolls the complete prior retention pair back in the model, Store, and persisted payload. `SettingsView` owns only draft/pending UI state and delegates accepted changes to the model.
 
 **Tech Stack:** Swift 5.9+, SwiftUI/AppKit on macOS 13+, Foundation `UserDefaults`, SQLite-backed `ClipboardStore`, custom `LocalClipTestRunner`.
 
@@ -17,6 +17,7 @@
 - Lowering either effective limit requires confirmation and prunes immediately after confirmation.
 - Raising a limit or selecting permanent saves without confirmation.
 - Pruning never runs on the main actor.
+- A prune failure must retain its error status but roll back the complete prior retention pair everywhere; it must never retain the failed proposed limits.
 - Existing positive non-preset persisted values remain visible and usable until the user selects a preset.
 - One dual text/image capture continues to count as two stored items.
 
@@ -156,7 +157,7 @@ Implement `updateRetention` to:
 3. Update both settings fields and call existing `persistSettings()`.
 4. Return immediately with success for non-reductions.
 5. For reductions, set `isUpdatingRetention`, execute `store.prune()` in `Task.detached(priority: .utility)`, then call synchronous `refresh()` on the main actor.
-6. On prune error, set a Chinese status message and return false.
+6. On prune error, restore the complete prior settings through `persistSettings()` so `AppModel.settings`, `ClipboardStore.settings`, and the injected `UserDefaults` payload all return to the old pair; then set a Chinese status message and return false.
 7. Always restore `isUpdatingRetention` to false.
 
 - [ ] **Step 4: Run tests and verify GREEN**
@@ -205,7 +206,7 @@ Render “最多保留” and “保留时长” rows with menu-style `Picker`s.
 
 The picker binding setter proposes a complete `(maxItems, maxAgeDays)` pair. If `AppSettings.isRetentionReduction(...)` is true, store it as pending and show an alert without changing accepted local state. Otherwise apply immediately. The alert has “取消” and destructive “清理并应用”; only the destructive action applies the pending pair.
 
-`applyRetention` updates accepted local state, launches a main-actor `Task`, awaits the model API, and restores local state from `model.settings` if the update fails. Disable both pickers while `model.isUpdatingRetention`.
+`applyRetention` updates accepted local state, launches a main-actor `Task`, awaits the model API, and restores both local values from `model.settings` if the update fails. For a failed reduction, the model has already rolled back to the previous accepted pair. Disable both pickers while `model.isUpdatingRetention`.
 
 - [ ] **Step 3: Build and inspect the resulting source**
 

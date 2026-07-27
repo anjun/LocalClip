@@ -357,7 +357,12 @@ public final class ClipboardStore: @unchecked Sendable {
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_double(stmt, 1, cutoff.timeIntervalSince1970)
         var ids: [String] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        while true {
+            let result = sqlite3_step(stmt)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else {
+                throw ClipboardStoreError.execFailed(lastError())
+            }
             if let c = sqlite3_column_text(stmt, 0) {
                 ids.append(String(cString: c))
             }
@@ -427,7 +432,12 @@ public final class ClipboardStore: @unchecked Sendable {
             bindText(stmt, 1, query)
         }
         var items: [ClipboardItem] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        while true {
+            let result = sqlite3_step(stmt)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else {
+                throw ClipboardStoreError.execFailed(lastError())
+            }
             items.append(rowToItem(stmt))
         }
         return items
