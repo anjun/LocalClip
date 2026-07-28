@@ -1,57 +1,49 @@
-# Keyboard Selection Scroll Design
+# 键盘选中项滚动设计
 
-## Problem
+## 问题
 
-The history panel updates `AppModel.selectedItemID` when the user presses the
-Up or Down arrow key. The visible history list is a `ScrollView` containing a
-`LazyVStack`, but its rows are not programmatic scroll targets and the scroll
-view does not react to selection changes. As a result, keyboard selection can
-move beyond the visible rows while the scroll position remains unchanged.
+用户按下键盘上、下方向键时，历史面板会更新
+`AppModel.selectedItemID`。当前可见列表由 `ScrollView` 和
+`LazyVStack` 组成，但列表行没有设置成可编程滚动的目标，滚动视图也不会响应选中项变化。
+因此，键盘选中项可能移动到可视区域之外，而列表仍停留在原来的位置。
 
-## Desired Behavior
+## 预期行为
 
-- Keep the keyboard-selected history row fully visible.
-- Scroll only when needed, and only by the minimum distance required.
-- Preserve the existing selection, search, refresh, hover, click, and paste
-  behavior.
-- Continue supporting the package's macOS 13 deployment target.
+- 始终让键盘选中的历史记录行完整可见。
+- 仅在必要时滚动，并且只滚动让目标行重新可见所需的最小距离。
+- 保持现有的选择、搜索、刷新、悬停、点击和粘贴行为不变。
+- 继续兼容项目当前的 macOS 13 最低部署版本。
 
-## Design
+## 设计
 
-Wrap the existing history `ScrollView` in a `ScrollViewReader`. Give each row
-its existing stable `ClipboardItem.id` as its SwiftUI view identifier. Observe
-changes to `model.selectedItemID` inside the reader and call
-`ScrollViewProxy.scrollTo(_:)` without an anchor for a valid selected item.
+使用 `ScrollViewReader` 包裹现有历史记录 `ScrollView`，并把每条记录稳定的
+`ClipboardItem.id` 设置为对应 SwiftUI 视图的标识。在 reader 内监听
+`model.selectedItemID` 的变化；当选中的 ID 仍然有效时，调用
+`ScrollViewProxy.scrollTo(_:)`，且不传入 anchor。
 
-SwiftUI documents that an omitted anchor scrolls the minimum amount required
-to make the identified view wholly visible. This provides native list-like
-following without recentering the row on every key press.
+根据 SwiftUI 官方文档，不传 anchor 时，滚动视图只会移动让目标视图完整可见所需的
+最小距离。这样可以获得接近原生列表的跟随体验，同时避免每次按键都把选中项重新居中。
 
-The keyboard router and `AppModel.moveSelection(delta:)` remain unchanged.
-Selection continues to have one source of truth, and the view merely reflects
-that state by keeping the selected row visible.
+键盘路由和 `AppModel.moveSelection(delta:)` 保持不变。选中状态仍然只有一个数据源，
+视图只负责根据该状态确保选中行可见。
 
-## Edge Cases
+## 边界情况
 
-- Empty history: no row and no scroll request.
-- Selection removed by refresh or search: `AppModel.reconcileSelection()`
-  selects the first valid result; the list scrolls it into view.
-- Stale or unknown selection ID: ignore the scroll request.
-- Repeated Up at the first row or Down at the last row: the selected ID does
-  not change, so no unnecessary scrolling occurs.
-- Mouse scrolling remains unrestricted; the list only repositions after the
-  selected ID changes.
+- 历史记录为空：不存在目标行，不发起滚动。
+- 刷新或搜索移除了原选中项：`AppModel.reconcileSelection()` 会选择结果中的第一条
+  有效记录，列表随后滚动使其可见。
+- 选中 ID 已失效或不存在：忽略这次滚动请求。
+- 已在第一行继续按上键，或已在最后一行继续按下键：选中 ID 不变，不产生多余滚动。
+- 鼠标滚动不受限制；只有选中 ID 发生变化时，列表才会自动调整位置。
 
-## Testing
+## 测试
 
-Add a regression test for resolving a valid selected ID into a scroll target
-and rejecting nil or stale selections. Then connect that tested resolution to
-the `ScrollViewReader` listener.
+先添加回归测试，验证有效的选中 ID 会被解析成滚动目标，而空值或失效 ID 不会产生
+滚动目标。随后把经过测试的目标解析逻辑接入 `ScrollViewReader` 的监听流程。
 
-Verification:
+验证步骤：
 
-1. Run the focused LocalClip test runner and confirm the new regression test
-   fails before the implementation and passes afterward.
-2. Run the complete test runner.
-3. Build the `LocalClip` release product to validate the SwiftUI integration
-   against the macOS 13 deployment target.
+1. 运行 LocalClip 测试程序中的相关测试，确认新回归测试在实现前失败、实现后通过。
+2. 运行完整测试程序。
+3. 构建 release 配置的 `LocalClip` 产品，验证 SwiftUI 接线能够在 macOS 13
+   最低部署版本下通过编译。
