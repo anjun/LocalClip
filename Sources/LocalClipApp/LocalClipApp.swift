@@ -264,34 +264,45 @@ struct HistoryPanel: View {
         if model.items.isEmpty {
             emptyState
         } else {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(model.items) { item in
-                        HistoryRow(
-                            item: item,
-                            isHovered: hoveredID == item.id,
-                            isSelected: model.selectedItemID == item.id
-                        )
-                        .contentShape(Rectangle())
-                        .onHover { hovering in
-                            if hovering {
-                                hoveredID = item.id
-                            } else if hoveredID == item.id {
-                                hoveredID = nil
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(model.items) { item in
+                            HistoryRow(
+                                item: item,
+                                isHovered: hoveredID == item.id,
+                                isSelected: model.selectedItemID == item.id
+                            )
+                            .id(item.id)
+                            .contentShape(Rectangle())
+                            .onHover { hovering in
+                                if hovering {
+                                    hoveredID = item.id
+                                } else if hoveredID == item.id {
+                                    hoveredID = nil
+                                }
                             }
+                            .onTapGesture {
+                                model.selectedItemID = item.id
+                                model.pasteItem(item)
+                            }
+                            .contextMenu {
+                                Button("粘贴") { model.pasteItem(item) }
+                                Button("删除", role: .destructive) { model.deleteItem(item) }
+                            }
+                            Divider().overlay(LCTheme.border).padding(.leading, 60)
                         }
-                        .onTapGesture {
-                            model.selectedItemID = item.id
-                            model.pasteItem(item)
-                        }
-                        .contextMenu {
-                            Button("粘贴") { model.pasteItem(item) }
-                            Button("删除", role: .destructive) { model.deleteItem(item) }
-                        }
-                        Divider().overlay(LCTheme.border).padding(.leading, 60)
                     }
+                    .padding(.horizontal, 8)
                 }
-                .padding(.horizontal, 8)
+                .onChange(of: model.selectedItemID) { selectedID in
+                    let ids = model.items.map(\.id)
+                    guard let targetID = HistoryListSelection.scrollTargetID(
+                        selected: selectedID,
+                        in: ids
+                    ) else { return }
+                    proxy.scrollTo(targetID)
+                }
             }
         }
     }

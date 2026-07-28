@@ -1001,6 +1001,18 @@ struct LocalClipTestRunner {
             HistoryListSelection.pasteTargetID(selected: nil, in: []) == nil,
             "empty list no paste target"
         )
+        expect(
+            HistoryListSelection.scrollTargetID(selected: "b", in: ids) == "b",
+            "valid selection resolves scroll target"
+        )
+        expect(
+            HistoryListSelection.scrollTargetID(selected: nil, in: ids) == nil,
+            "nil selection has no scroll target"
+        )
+        expect(
+            HistoryListSelection.scrollTargetID(selected: "gone", in: ids) == nil,
+            "stale selection has no scroll target"
+        )
     }
 
     static func runUpdateCheckerTests() {

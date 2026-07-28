@@ -29,6 +29,12 @@ public enum HistoryListSelection: Sendable {
         return ids.firstIndex(of: id)
     }
 
+    /// Selected item id to use as a scroll target, only while it exists in the list.
+    public static func scrollTargetID(selected: String?, in ids: [String]) -> String? {
+        guard let idx = index(of: selected, in: ids) else { return nil }
+        return ids[idx]
+    }
+
     /// Item id that Return paste should target: selection if still in list, else first.
     /// Same resolution `AppModel.pasteSelectedItem` uses before calling `pasteItem`.
     public static func pasteTargetID(selected: String?, in ids: [String]) -> String? {
