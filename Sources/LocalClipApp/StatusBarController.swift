@@ -212,6 +212,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         } else {
             LCAppearance.applySystem(to: popover.contentViewController?.view)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            // Always land on the newest item when opening (⌥C / menu-bar click).
+            // After show so ScrollViewReader can react to the selection change.
+            model.resetSelectionToTop()
             // Activate + key window so local key monitors receive ↑/↓/Return.
             NSApp.activate(ignoringOtherApps: true)
             if let win = popover.contentViewController?.view.window {

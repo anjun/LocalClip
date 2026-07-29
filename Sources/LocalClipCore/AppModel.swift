@@ -53,6 +53,9 @@ public final class AppModel: ObservableObject {
     private var searchWorkItem: DispatchWorkItem?
     /// Bumped on every load start / sync refresh so stale async results are dropped.
     private var itemsLoadGeneration: UInt64 = 0
+    /// When true, the next `reconcileSelection()` forces the first list item.
+    /// Set on panel open so an in-flight `refreshAsync()` still lands on top.
+    private var selectTopOnNextReconcile = false
 
     public init(
         storeRoot: URL? = nil,
@@ -241,14 +244,33 @@ public final class AppModel: ObservableObject {
             items = loaded
             reconcileSelection()
         case .failure(let error):
+            selectTopOnNextReconcile = false
             statusMessage = "Load failed: \(error)"
         }
     }
 
     private func reconcileSelection() {
         let ids = items.map(\.id)
+        if selectTopOnNextReconcile {
+            selectTopOnNextReconcile = false
+            selectedItemID = ids.first
+            return
+        }
         if let selectedItemID, ids.contains(selectedItemID) { return }
         selectedItemID = ids.first
+    }
+
+    /// Reset keyboard / visual selection to the newest (top) history item.
+    /// Call when opening the panel so ⌥C does not keep the previous cursor position.
+    public func resetSelectionToTop() {
+        selectTopOnNextReconcile = true
+        // Bounce through nil when already on top so ScrollViewReader still scrolls up
+        // (e.g. user mouse-scrolled away while the first item stayed selected).
+        let topID = items.first?.id
+        if selectedItemID == topID {
+            selectedItemID = nil
+        }
+        selectedItemID = topID
     }
 
     /// Move keyboard selection (↑/↓). Pure index math via HistoryListSelection.
