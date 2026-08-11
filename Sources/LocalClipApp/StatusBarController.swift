@@ -204,17 +204,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     func togglePopover() {
         guard let button = statusItem?.button, let popover else { return }
         model.refreshAccessibility()
-        // Async so opening the panel never blocks the main thread on SQLite / list rebuild.
-        model.refreshAsync()
         model.frontmostTracker.observeFrontmost()
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            // Clear leftover search + reset selection; load history off the main thread.
+            model.prepareForPanelOpen()
             LCAppearance.applySystem(to: popover.contentViewController?.view)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            // Always land on the newest item when opening (⌥C / menu-bar click).
-            // After show so ScrollViewReader can react to the selection change.
-            model.resetSelectionToTop()
             // Activate + key window so local key monitors receive ↑/↓/Return.
             NSApp.activate(ignoringOtherApps: true)
             if let win = popover.contentViewController?.view.window {

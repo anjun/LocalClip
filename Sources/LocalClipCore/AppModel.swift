@@ -273,6 +273,17 @@ public final class AppModel: ObservableObject {
         selectedItemID = topID
     }
 
+    /// Reset ephemeral UI state when opening the history panel.
+    /// AppModel outlives the popover, so a leftover search filter would otherwise stick.
+    public func prepareForPanelOpen() {
+        // Clear search first so refresh / debounce paths all load the full list.
+        searchQuery = ""
+        // Cancel any pending debounced search and load immediately (do not wait 160ms).
+        cancelPendingSearchLoad()
+        startLoadItems(for: "")
+        resetSelectionToTop()
+    }
+
     /// Move keyboard selection (↑/↓). Pure index math via HistoryListSelection.
     public func moveSelection(delta: Int) {
         let ids = items.map(\.id)

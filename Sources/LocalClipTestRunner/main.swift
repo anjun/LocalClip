@@ -28,6 +28,7 @@ struct LocalClipTestRunner {
         runUpdateCheckerTests()
         runAppModelRetentionTests()
         runAppModelSearchTests()
+        runAppModelPanelOpenSearchResetTests()
         if failures == 0 {
             print("ALL TESTS PASSED")
             exit(0)
@@ -1451,5 +1452,98 @@ struct LocalClipTestRunner {
         let afterClear = readItems()
         expect(afterClear.count == 1, "clear search not synchronous (still \(afterClear.count))")
         expect(waitItems(count: 3), "empty query restores full list")
+    }
+
+    /// Reopening the panel must clear leftover search so the full history shows again.
+    static func runAppModelPanelOpenSearchResetTests() {
+        print("--- appmodel panel open clears search ---")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LC-panel-open-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        final class State: @unchecked Sendable {
+            var model: AppModel?
+            var setupError: String?
+            var phase = 0
+        }
+        let state = State()
+
+        DispatchQueue.main.async {
+            Task { @MainActor in
+                do {
+                    let model = try AppModel(storeRoot: root)
+                    model.searchDebounceNanoseconds = 50_000_000
+                    model.store.pruneExecutor = { _ in }
+                    _ = try model.store.insertText("Hello Alpha")
+                    _ = try model.store.insertText("other beta")
+                    model.refresh()
+                    state.model = model
+                    state.phase = 1
+                } catch {
+                    state.setupError = "\(error)"
+                    state.phase = 2
+                }
+            }
+        }
+
+        let readyDeadline = Date().addingTimeInterval(3)
+        while state.phase == 0, Date() < readyDeadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        if let err = state.setupError {
+            failures += 1
+            print("FAIL appmodel panel-open setup: \(err)")
+            return
+        }
+        guard let model = state.model else {
+            expect(false, "appmodel panel-open model ready")
+            return
+        }
+
+        final class Probe: @unchecked Sendable {
+            var itemsCount = -1
+            var query = "unset"
+            var finished = false
+        }
+
+        func onMain(_ body: @escaping @MainActor () -> Void) {
+            DispatchQueue.main.async {
+                Task { @MainActor in body() }
+            }
+        }
+
+        func readState() -> (count: Int, query: String) {
+            let probe = Probe()
+            onMain {
+                probe.itemsCount = model.items.count
+                probe.query = model.searchQuery
+                probe.finished = true
+            }
+            let d = Date().addingTimeInterval(2)
+            while !probe.finished, Date() < d {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            return (probe.itemsCount, probe.query)
+        }
+
+        func waitItems(count: Int, timeout: TimeInterval = 2) -> Bool {
+            let d = Date().addingTimeInterval(timeout)
+            while Date() < d {
+                if readState().count == count { return true }
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+            }
+            return readState().count == count
+        }
+
+        onMain { model.searchQuery = "Hello" }
+        expect(waitItems(count: 1), "filter before panel open")
+        expect(readState().query == "Hello", "search query set before panel open")
+
+        onMain { model.prepareForPanelOpen() }
+        // Query clear is synchronous; list restore may be async.
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        let after = readState()
+        expect(after.query.isEmpty, "panel open clears search query (got \"\(after.query)\")")
+        expect(waitItems(count: 2), "panel open restores full unfiltered list")
     }
 }
