@@ -367,6 +367,7 @@ public final class AppModel: ObservableObject {
 
         switch result {
         case .wroteAndAutoPasted:
+            promoteReusedItem(item)
             target?.activate(options: [.activateIgnoringOtherApps])
             // Non-blocking delay so target becomes key before ⌘V.
             try? await Task.sleep(nanoseconds: 150_000_000)
@@ -377,11 +378,24 @@ public final class AppModel: ObservableObject {
                 statusMessage = "已粘贴（若未出现请手动 ⌘V）"
             }
         case .wroteClipboardOnly:
+            promoteReusedItem(item)
             statusMessage = "已复制到剪贴板，请 ⌘V"
         case .failed:
             statusMessage = "粘贴失败"
         case .nothing:
             statusMessage = "无内容可粘贴"
+        }
+    }
+
+    /// After a successful history paste, move that row to the top of history.
+    /// Self-write guard skips monitor re-ingest, so we update `created_at` explicitly.
+    private func promoteReusedItem(_ item: ClipboardItem) {
+        do {
+            _ = try store.promote(id: item.id)
+            refreshAsync()
+        } catch {
+            // Paste already succeeded; promotion is best-effort UX.
+            NSLog("LocalClip promote after paste failed: \(error)")
         }
     }
 

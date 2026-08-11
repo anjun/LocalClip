@@ -169,6 +169,29 @@ struct LocalClipTestRunner {
             expect(found.first?.textContent == "Hello World", "search content")
         }
 
+        // Promote on reuse: pasting an older history item bumps it to the top
+        // (same row id, newer created_at) without inserting a duplicate.
+        withStore { store, _, _ in
+            let t0 = Date(timeIntervalSince1970: 1_000)
+            let t1 = Date(timeIntervalSince1970: 2_000)
+            let t2 = Date(timeIntervalSince1970: 3_000)
+            let older = try store.insertText("old-hit", createdAt: t0)!
+            _ = try store.insertText("mid", createdAt: t1)
+            _ = try store.insertText("newest", createdAt: t2)
+            var all = try store.allItems()
+            expect(all.map(\.textContent) == ["newest", "mid", "old-hit"], "order before promote")
+
+            let promoted = try store.promote(id: older.id, to: Date(timeIntervalSince1970: 4_000))
+            expect(promoted?.id == older.id, "promote keeps same id")
+            expect(promoted?.textContent == "old-hit", "promote keeps content")
+            all = try store.allItems()
+            expect(all.count == 3, "promote does not duplicate")
+            expect(all.map(\.textContent) == ["old-hit", "newest", "mid"], "promoted item is first")
+            expect(all.first?.id == older.id, "first row is same promoted id")
+
+            expect(try store.promote(id: "missing-id") == nil, "promote missing id returns nil")
+        }
+
         withStore { store, _, _ in
             _ = try store.insertImage(data: tinyPNG())
             _ = try store.insertText("findme")

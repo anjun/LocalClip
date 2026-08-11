@@ -242,6 +242,28 @@ public final class ClipboardStore: @unchecked Sendable {
         retryPendingAssetCleanupLocked()
     }
 
+    /// Bump an existing history row to the top of the list (same id, newer `created_at`).
+    /// Used after reusing a past item so it appears first without a duplicate insert.
+    @discardableResult
+    public func promote(id: String, to createdAt: Date? = nil) throws -> ClipboardItem? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard try fetchByIdLocked(id) != nil else { return nil }
+        let when = createdAt ?? clock.now()
+        let sql = "UPDATE items SET created_at = ? WHERE id = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_double(stmt, 1, when.timeIntervalSince1970)
+        bindText(stmt, 2, id)
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw ClipboardStoreError.execFailed(lastError())
+        }
+        return try fetchByIdLocked(id)
+    }
+
     // MARK: - Private insert
 
     private func newestHashLocked(kind: ClipboardItemKind) throws -> String? {
