@@ -212,12 +212,25 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             model.prepareForPanelOpen()
             LCAppearance.applySystem(to: popover.contentViewController?.view)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            // Activate + key window so local key monitors receive ↑/↓/Return.
+            // Activate + key window so local key monitors receive ↑/↓/Return,
+            // then focus the search field (not the hosting view).
             NSApp.activate(ignoringOtherApps: true)
-            if let win = popover.contentViewController?.view.window {
-                win.makeKey()
-                win.makeFirstResponder(popover.contentViewController?.view)
-            }
+            popover.contentViewController?.view.window?.makeKey()
+            focusSearchField(attemptsRemaining: 6)
+        }
+    }
+
+    /// SwiftUI may not have materialized the `NSTextField` on the first pass after `show()`.
+    private func focusSearchField(attemptsRemaining: Int) {
+        guard attemptsRemaining > 0, let popover, popover.isShown else { return }
+        let root = popover.contentViewController?.view
+        let window = root?.window
+        window?.makeKey()
+        if PanelOpenFocus.makeSearchFieldFirstResponder(in: window, root: root) {
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.focusSearchField(attemptsRemaining: attemptsRemaining - 1)
         }
     }
 

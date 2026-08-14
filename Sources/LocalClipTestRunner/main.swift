@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import LocalClipCore
@@ -29,6 +30,7 @@ struct LocalClipTestRunner {
         runAppModelRetentionTests()
         runAppModelSearchTests()
         runAppModelPanelOpenSearchResetTests()
+        runPanelOpenFocusTests()
         if failures == 0 {
             print("ALL TESTS PASSED")
             exit(0)
@@ -1562,11 +1564,90 @@ struct LocalClipTestRunner {
         expect(waitItems(count: 1), "filter before panel open")
         expect(readState().query == "Hello", "search query set before panel open")
 
+        func readNonce() -> UInt {
+            final class NonceProbe: @unchecked Sendable {
+                var value: UInt = 0
+                var finished = false
+            }
+            let probe = NonceProbe()
+            onMain {
+                probe.value = model.searchFocusNonce
+                probe.finished = true
+            }
+            let deadline = Date().addingTimeInterval(1)
+            while !probe.finished, Date() < deadline {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            return probe.value
+        }
+
+        let nonceBefore = readNonce()
         onMain { model.prepareForPanelOpen() }
         // Query clear is synchronous; list restore may be async.
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
         let after = readState()
         expect(after.query.isEmpty, "panel open clears search query (got \"\(after.query)\")")
         expect(waitItems(count: 2), "panel open restores full unfiltered list")
+        let nonceAfter = readNonce()
+        expect(
+            nonceAfter == nonceBefore + 1,
+            "panel open requests search focus (before \(nonceBefore) after \(nonceAfter))"
+        )
+    }
+
+    /// Opening the panel must focus the search field, not the SwiftUI hosting view.
+    static func runPanelOpenFocusTests() {
+        print("--- panel open focuses search field ---")
+
+        let hostingRoot = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 480))
+        let label = NSTextField(labelWithString: "LocalClip")
+        let hiddenSearch = NSTextField(string: "")
+        hiddenSearch.isEditable = true
+        hiddenSearch.isHidden = true
+        let searchField = NSTextField(string: "")
+        searchField.placeholderString = "搜索剪贴记录…"
+        searchField.isEditable = true
+        let footerButton = NSButton(title: "清空", target: nil, action: nil)
+
+        hostingRoot.addSubview(label)
+        hostingRoot.addSubview(hiddenSearch)
+        hostingRoot.addSubview(searchField)
+        hostingRoot.addSubview(footerButton)
+
+        let preferred = PanelOpenFocus.preferredFirstResponder(in: hostingRoot)
+        expect(preferred === searchField, "panel open prefers the visible editable search field")
+        expect(preferred !== hostingRoot, "panel open must not keep the hosting view as first responder")
+        expect(preferred !== hiddenSearch, "hidden editable field is skipped")
+        expect(preferred !== label, "static labels are not focus targets")
+
+        expect(PanelOpenFocus.preferredFirstResponder(in: nil) == nil, "nil root has no focus target")
+
+        let emptyHost = NSView()
+        emptyHost.addSubview(NSTextField(labelWithString: "还没有剪下的内容"))
+        expect(
+            PanelOpenFocus.preferredFirstResponder(in: emptyHost) == nil,
+            "no editable field means no preferred first responder"
+        )
+
+        expect(
+            HistoryPanelKeyRouting.decision(keyCode: 125) == .moveSelection(delta: 1),
+            "down arrow from search selects the next list row"
+        )
+        expect(
+            HistoryPanelKeyRouting.decision(keyCode: 126) == .moveSelection(delta: -1),
+            "up arrow from search selects the previous list row"
+        )
+        expect(
+            HistoryPanelKeyRouting.decision(keyCode: 36) == .pasteSelected,
+            "return from search pastes the selected row"
+        )
+        expect(
+            HistoryPanelKeyRouting.decision(keyCode: 76) == .pasteSelected,
+            "keypad enter from search pastes the selected row"
+        )
+        expect(
+            HistoryPanelKeyRouting.decision(keyCode: 0) == .typeInSearch,
+            "letter keys stay in the search field"
+        )
     }
 }

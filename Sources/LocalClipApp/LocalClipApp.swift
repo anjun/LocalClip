@@ -105,20 +105,17 @@ struct LocalClipApp: App {
 /// Always intercepts navigation keys (search field must not swallow ↑/↓/Return —
 /// that was why keyboard paste appeared dead). Other keys still reach the search field.
 enum HistoryPanelKeyRouter {
-    /// keyCode: 125 ↓, 126 ↑, 36 return, 76 keypad enter
+    /// Intercepts list navigation even when the search field is first responder.
     static func handle(_ event: NSEvent) -> NSEvent? {
         guard let model = AppDelegate.sharedModel else { return event }
-        switch event.keyCode {
-        case 125: // down arrow
-            DispatchQueue.main.async { model.moveSelection(delta: 1) }
+        switch HistoryPanelKeyRouting.decision(keyCode: event.keyCode) {
+        case .moveSelection(let delta):
+            DispatchQueue.main.async { model.moveSelection(delta: delta) }
             return nil
-        case 126: // up arrow
-            DispatchQueue.main.async { model.moveSelection(delta: -1) }
-            return nil
-        case 36, 76: // return / enter → same paste path as click
+        case .pasteSelected:
             DispatchQueue.main.async { model.pasteSelectedItem() }
             return nil
-        default:
+        case .typeInSearch:
             return event
         }
     }
@@ -130,6 +127,7 @@ struct HistoryPanel: View {
     @EnvironmentObject var model: AppModel
     @State private var hoveredID: String?
     @State private var keyMonitor: Any?
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         ZStack {
@@ -148,6 +146,13 @@ struct HistoryPanel: View {
             model.refreshAccessibility()
             model.frontmostTracker.observeFrontmost()
             installKeyMonitor()
+            isSearchFocused = true
+        }
+        .onChange(of: model.searchFocusNonce) { _ in
+            isSearchFocused = false
+            DispatchQueue.main.async {
+                isSearchFocused = true
+            }
         }
         .onDisappear {
             removeKeyMonitor()
@@ -200,6 +205,7 @@ struct HistoryPanel: View {
     private var searchBar: some View {
         TextField("搜索剪贴记录…", text: $model.searchQuery)
             .textFieldStyle(LCSearchFieldStyle())
+            .focused($isSearchFocused)
             .padding(.horizontal, 16)
             .padding(.bottom, 10)
     }

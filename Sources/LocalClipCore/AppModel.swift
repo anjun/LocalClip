@@ -14,6 +14,8 @@ public final class AppModel: ObservableObject {
             scheduleSearchRefresh()
         }
     }
+    /// Bumped on each panel open so the search field can take keyboard focus again.
+    @Published public private(set) var searchFocusNonce: UInt = 0
     @Published public var plainTextPaste: Bool {
         didSet {
             settings.plainTextPaste = plainTextPaste
@@ -282,6 +284,7 @@ public final class AppModel: ObservableObject {
         cancelPendingSearchLoad()
         startLoadItems(for: "")
         resetSelectionToTop()
+        searchFocusNonce += 1
     }
 
     /// Move keyboard selection (↑/↓). Pure index math via HistoryListSelection.
