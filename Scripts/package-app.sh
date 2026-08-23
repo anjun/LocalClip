@@ -36,10 +36,15 @@ package_into() {
   printf 'APPL????' > "$APP/Contents/PkgInfo"
   chmod +x "$APP/Contents/MacOS/LocalClip"
   xattr -cr "$APP" 2>/dev/null || true
-  # Ad-hoc sign with stable identifier (no hardened runtime — that can break Accessibility)
+  # Ad-hoc sign with a stable designated requirement. Default ad-hoc DR is a
+  # CDHash, so every rebuild looks like a new app to Screen Recording TCC and
+  # `screencapture` can only grab the wallpaper.
   if command -v codesign >/dev/null; then
-    codesign --force --sign - --identifier "com.localclip.app" "$APP/Contents/MacOS/LocalClip" 2>/dev/null || true
-    codesign --force --sign - --identifier "com.localclip.app" "$APP" 2>/dev/null || true
+    local req='=designated => identifier "com.localclip.app"'
+    codesign --force --sign - --identifier "com.localclip.app" --requirements "$req" \
+      "$APP/Contents/MacOS/LocalClip"
+    codesign --force --sign - --identifier "com.localclip.app" --requirements "$req" \
+      "$APP"
   fi
 }
 

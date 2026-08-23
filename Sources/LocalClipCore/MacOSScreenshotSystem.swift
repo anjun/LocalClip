@@ -12,7 +12,52 @@ public final class MacOSScreenshotSystem: ScreenshotSystem, @unchecked Sendable 
     }
 
     public func preflightAccess() -> Bool {
-        CGPreflightScreenCaptureAccess()
+        if let probed = Self.probeForeignWindowCapture() {
+            return probed
+        }
+        return CGPreflightScreenCaptureAccess()
+    }
+
+    /// `true`/`false` when another app window can be tested; `nil` if none are on screen.
+    /// Prefer this over `CGPreflightScreenCaptureAccess()`, which lies for ad-hoc apps
+    /// on macOS 15 and does not tell us whether other windows are actually captured.
+    public static func probeForeignWindowCapture() -> Bool? {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let info = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        var sawCandidate = false
+        for entry in info {
+            guard let rawID = entry[kCGWindowNumber as String] else { continue }
+            let windowID = CGWindowID((rawID as? NSNumber)?.uint32Value ?? 0)
+            guard windowID != 0 else { continue }
+            let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+            guard layer == 0 else { continue }
+            let ownerPID = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
+            guard ownerPID != 0, ownerPID != selfPID else { continue }
+            let bounds = entry[kCGWindowBounds as String] as? [String: Any]
+            let width = (bounds?["Width"] as? NSNumber)?.doubleValue ?? 0
+            let height = (bounds?["Height"] as? NSNumber)?.doubleValue ?? 0
+            guard width >= 64, height >= 64 else { continue }
+
+            sawCandidate = true
+            let image = CGWindowListCreateImage(
+                .null,
+                [.optionIncludingWindow],
+                windowID,
+                [.boundsIgnoreFraming, .bestResolution]
+            )
+            if isUsableWindowCapture(image) {
+                return true
+            }
+        }
+        return sawCandidate ? false : nil
+    }
+
+    public static func isUsableWindowCapture(_ image: CGImage?) -> Bool {
+        guard let image else { return false }
+        return image.width >= 16 && image.height >= 16
     }
 
     public func requestAccess() -> Bool {

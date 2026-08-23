@@ -116,13 +116,16 @@ chmod +x "$APP/Contents/MacOS/LocalClip"
 # Strip quarantine from build tree pieces we control
 xattr -cr "$APP" 2>/dev/null || true
 
-echo "==> Ad-hoc codesign for local/GitHub build…"
+echo "==> Ad-hoc codesign with stable designated requirement…"
 if command -v codesign >/dev/null; then
-  codesign --force --sign - --identifier "$BUNDLE_ID" "$APP/Contents/MacOS/LocalClip"
-  codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
+  req="=designated => identifier \"$BUNDLE_ID\""
+  codesign --force --sign - --identifier "$BUNDLE_ID" --requirements "$req" \
+    "$APP/Contents/MacOS/LocalClip"
+  codesign --force --sign - --identifier "$BUNDLE_ID" --requirements "$req" \
+    "$APP"
   codesign --verify --verbose=1 "$APP" 2>&1 || true
+  codesign -d -r- "$APP" 2>&1 | grep -F "identifier \"$BUNDLE_ID\"" >/dev/null
 fi
-echo "warning: ad-hoc signatures change identity on rebuild; stable TCC permissions require Apple Development or Developer ID signing." >&2
 
 # Install for local use (stable TCC identity path). Skip in CI via SKIP_LOCAL_INSTALL=1.
 if [[ "${SKIP_LOCAL_INSTALL:-0}" != "1" ]]; then

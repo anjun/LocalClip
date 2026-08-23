@@ -2125,6 +2125,10 @@ struct LocalClipTestRunner {
                 && !commandArguments.contains("-c"),
             "macOS command keeps system sound, omits cursor, and writes only its temp file"
         )
+        expect(
+            MacOSScreenshotSystem.isUsableWindowCapture(nil) == false,
+            "a missing window image is not effective screen-capture access"
+        )
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LC-screenshot-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2144,6 +2148,7 @@ struct LocalClipTestRunner {
                 requestCount += 1
                 if let authorizedAfterRequest {
                     authorized = authorizedAfterRequest
+                    writesImage = authorizedAfterRequest
                 }
                 return requestResult
             }
@@ -2254,9 +2259,42 @@ struct LocalClipTestRunner {
                         "cancelled screenshot leaves clipboard and history unchanged"
                     )
 
+                    let desktopOnlySystem = FakeScreenshotSystem()
+                    desktopOnlySystem.authorized = false
+                    desktopOnlySystem.writesImage = true
+                    desktopOnlySystem.imageData = uniquePNG(39)
+                    let desktopOnlyCapture = ScreenshotCapture(
+                        store: store,
+                        pasteboard: board,
+                        selfWriteGuard: selfWriteGuard,
+                        system: desktopOnlySystem,
+                        temporaryDirectory: root.appendingPathComponent(
+                            "desktop-only",
+                            isDirectory: true
+                        )
+                    )
+                    let historyBeforeDesktopLie = try store.allItems().count
+                    expect(
+                        await desktopOnlyCapture.captureRegion() == .permissionRequestAttempted
+                            && desktopOnlySystem.requestCount == 1
+                            && desktopOnlySystem.captureCount == 0,
+                        "without window-capture access, do not run screencapture (it would grab the desktop)"
+                    )
+                    expect(
+                        try store.allItems().count == historyBeforeDesktopLie,
+                        "a desktop-only permission miss must not enter clipboard history"
+                    )
+                    expect(
+                        await desktopOnlyCapture.captureRegion() == .permissionDenied
+                            && desktopOnlySystem.requestCount == 1
+                            && desktopOnlySystem.captureCount == 0,
+                        "later attempts still do not capture other apps until access is effective"
+                    )
+
                     let deniedSystem = FakeScreenshotSystem()
                     deniedSystem.authorized = false
                     deniedSystem.requestResult = false
+                    deniedSystem.writesImage = false
                     let deniedCapture = ScreenshotCapture(
                         store: store,
                         pasteboard: board,
@@ -2279,6 +2317,7 @@ struct LocalClipTestRunner {
 
                     let grantedAfterRequestSystem = FakeScreenshotSystem()
                     grantedAfterRequestSystem.authorized = false
+                    grantedAfterRequestSystem.writesImage = false
                     grantedAfterRequestSystem.requestResult = true
                     grantedAfterRequestSystem.authorizedAfterRequest = true
                     grantedAfterRequestSystem.imageData = uniquePNG(40)
@@ -2293,7 +2332,9 @@ struct LocalClipTestRunner {
                         )
                     )
                     expect(
-                        await grantedAfterRequestCapture.captureRegion() == .permissionRequestAttempted
+                        await grantedAfterRequestCapture.captureRegion()
+                            == .permissionRequestAttempted
+                            && grantedAfterRequestSystem.requestCount == 1
                             && grantedAfterRequestSystem.captureCount == 0,
                         "permission request completion never starts capture under the native prompt"
                     )

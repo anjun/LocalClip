@@ -94,13 +94,13 @@ public final class ScreenshotCapture {
         isCapturing = true
         defer { isCapturing = false }
 
+        // Without effective window-capture access, `screencapture` still opens a
+        // selection UI but only grabs the wallpaper, then the system prompts.
+        // Do not run it until this process can actually see other apps.
         if !system.preflightAccess() {
             guard !requestedPermissionThisRun else { return .permissionDenied }
             requestedPermissionThisRun = true
             _ = system.requestAccess()
-            // CGRequestScreenCaptureAccess can return while the native TCC UI is
-            // still visible. Stop this attempt regardless of the Boolean result;
-            // a later hotkey press will either capture or report a real denial.
             return .permissionRequestAttempted
         }
 

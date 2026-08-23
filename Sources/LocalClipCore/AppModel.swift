@@ -438,9 +438,9 @@ public final class AppModel: ObservableObject {
         case .cancelled, .ignoredAlreadyCapturing:
             break
         case .permissionRequestAttempted:
-            statusMessage = "请完成系统屏幕录制授权；若未出现提示，请在偏好设置中打开系统设置"
+            statusMessage = "请允许屏幕录制；允许后必须完全退出并重新打开 LocalClip，再按一次截屏快捷键"
         case .permissionDenied:
-            statusMessage = "快速截屏需要屏幕录制权限"
+            statusMessage = "当前进程还不能截到其他应用。请在系统设置里删掉旧的 LocalClip，重新打开开关，然后完全退出再打开"
         case .failed(let failure):
             statusMessage = failure.localizedDescription
         }
