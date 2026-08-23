@@ -45,6 +45,9 @@ extension ScreenshotCaptureFailure: LocalizedError {
 public enum ScreenshotCaptureOutcome: Equatable, Sendable {
     case captured(history: ScreenshotHistoryOutcome)
     case cancelled
+    /// The system permission request API was called. macOS may still be
+    /// presenting its native UI, or may require the user to open Settings.
+    case permissionRequestAttempted
     case permissionDenied
     case ignoredAlreadyCapturing
     case failed(ScreenshotCaptureFailure)
@@ -94,7 +97,11 @@ public final class ScreenshotCapture {
         if !system.preflightAccess() {
             guard !requestedPermissionThisRun else { return .permissionDenied }
             requestedPermissionThisRun = true
-            guard system.requestAccess() else { return .permissionDenied }
+            _ = system.requestAccess()
+            // CGRequestScreenCaptureAccess can return while the native TCC UI is
+            // still visible. Stop this attempt regardless of the Boolean result;
+            // a later hotkey press will either capture or report a real denial.
+            return .permissionRequestAttempted
         }
 
         do {

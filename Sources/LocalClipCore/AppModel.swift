@@ -437,6 +437,8 @@ public final class AppModel: ObservableObject {
             refreshAsync()
         case .cancelled, .ignoredAlreadyCapturing:
             break
+        case .permissionRequestAttempted:
+            statusMessage = "请完成系统屏幕录制授权；若未出现提示，请在偏好设置中打开系统设置"
         case .permissionDenied:
             statusMessage = "快速截屏需要屏幕录制权限"
         case .failed(let failure):

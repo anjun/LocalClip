@@ -2132,7 +2132,9 @@ struct LocalClipTestRunner {
         final class FakeScreenshotSystem: ScreenshotSystem {
             var authorized = true
             var requestResult = true
+            var authorizedAfterRequest: Bool?
             var requestCount = 0
+            var captureCount = 0
             var writesImage = true
             var lastOutputURL: URL?
             var imageData = LocalClipTestRunner.tinyPNG()
@@ -2140,10 +2142,13 @@ struct LocalClipTestRunner {
             func preflightAccess() -> Bool { authorized }
             func requestAccess() -> Bool {
                 requestCount += 1
-                authorized = requestResult
+                if let authorizedAfterRequest {
+                    authorized = authorizedAfterRequest
+                }
                 return requestResult
             }
             func captureRegion(to outputURL: URL) async throws -> ScreenshotProcessResult {
+                captureCount += 1
                 lastOutputURL = outputURL
                 if writesImage {
                     try imageData.write(to: outputURL, options: .atomic)
@@ -2260,13 +2265,44 @@ struct LocalClipTestRunner {
                         temporaryDirectory: root.appendingPathComponent("denied", isDirectory: true)
                     )
                     expect(
-                        await deniedCapture.captureRegion() == .permissionDenied,
-                        "first denied screenshot reports screen recording permission"
+                        await deniedCapture.captureRegion() == .permissionRequestAttempted
+                            && deniedSystem.requestCount == 1
+                            && deniedSystem.captureCount == 0,
+                        "first screenshot request lets the native screen recording prompt stand alone"
                     )
                     expect(
                         await deniedCapture.captureRegion() == .permissionDenied
-                            && deniedSystem.requestCount == 1,
-                        "denied permission is requested only once per app run"
+                            && deniedSystem.requestCount == 1
+                            && deniedSystem.captureCount == 0,
+                        "a later attempt reports denial without repeating the native permission request"
+                    )
+
+                    let grantedAfterRequestSystem = FakeScreenshotSystem()
+                    grantedAfterRequestSystem.authorized = false
+                    grantedAfterRequestSystem.requestResult = true
+                    grantedAfterRequestSystem.authorizedAfterRequest = true
+                    grantedAfterRequestSystem.imageData = uniquePNG(40)
+                    let grantedAfterRequestCapture = ScreenshotCapture(
+                        store: store,
+                        pasteboard: board,
+                        selfWriteGuard: selfWriteGuard,
+                        system: grantedAfterRequestSystem,
+                        temporaryDirectory: root.appendingPathComponent(
+                            "granted-after-request",
+                            isDirectory: true
+                        )
+                    )
+                    expect(
+                        await grantedAfterRequestCapture.captureRegion() == .permissionRequestAttempted
+                            && grantedAfterRequestSystem.captureCount == 0,
+                        "permission request completion never starts capture under the native prompt"
+                    )
+                    expect(
+                        await grantedAfterRequestCapture.captureRegion()
+                            == .captured(history: .inserted)
+                            && grantedAfterRequestSystem.requestCount == 1
+                            && grantedAfterRequestSystem.captureCount == 1,
+                        "next screenshot attempt captures after permission becomes available"
                     )
 
                     let failingBoard = FailingPasteboard()

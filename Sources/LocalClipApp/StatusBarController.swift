@@ -15,9 +15,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// Owned prefs window — never use SwiftUI Settings scene (it opens unexpectedly).
     private var preferencesWindow: NSWindow?
     private var updateProgressController: UpdateProgressController?
-    private var screenCaptureActivationObserver: NSObjectProtocol?
-    private var screenCapturePermissionAlertPending = false
-
     /// After context menu closes, the dismissing click can fall through to the status
     /// button as a left-click. Swallow status-item actions briefly.
     private var suppressStatusActionsUntil: Date = .distantPast
@@ -272,84 +269,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                let outcome = await self.model.captureRegionScreenshot()
-                if case .permissionDenied = outcome {
-                    self.showScreenCapturePermissionAlert()
-                }
+                // Permission UI is owned entirely by macOS. The hotkey path
+                // must never stack or repeat a LocalClip authorization alert.
+                _ = await self?.model.captureRegionScreenshot()
             }
-        }
-    }
-
-    private func showScreenCapturePermissionAlert() {
-        guard !screenCapturePermissionAlertPending else { return }
-        screenCapturePermissionAlertPending = true
-
-        if NSApp.isActive {
-            presentScreenCapturePermissionAlert()
-            return
-        }
-
-        screenCaptureActivationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: NSApp,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.presentScreenCapturePermissionAlert()
-            }
-        }
-
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self,
-                  self.screenCapturePermissionAlertPending,
-                  self.screenCaptureActivationObserver != nil
-            else { return }
-            self.clearScreenCaptureActivationObserver()
-            self.screenCapturePermissionAlertPending = false
-            self.model.statusMessage = "快速截屏需要屏幕录制权限"
-            self.model.openScreenCaptureSettings()
-        }
-    }
-
-    private func presentScreenCapturePermissionAlert() {
-        guard screenCapturePermissionAlertPending, NSApp.isActive else { return }
-        clearScreenCaptureActivationObserver()
-
-        // Activation is asynchronous. Wait one more main-loop turn after the
-        // didBecomeActive notification before ordering a modal alert.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.screenCapturePermissionAlertPending, NSApp.isActive else {
-                return
-            }
-            self.runScreenCapturePermissionAlert()
-        }
-    }
-
-    private func runScreenCapturePermissionAlert() {
-        let alert = NSAlert()
-        alert.messageText = "允许 LocalClip 录制屏幕"
-        alert.informativeText = "区域截屏需要“屏幕与系统音频录制”权限。若系统设置已经勾选但仍提示未授权，请确认只保留一份 LocalClip，完全退出后重新打开，再次授权。"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "打开系统设置")
-        alert.addButton(withTitle: "取消")
-        let response = alert.runModal()
-        screenCapturePermissionAlertPending = false
-        if response == .alertFirstButtonReturn {
-            model.openScreenCaptureSettings()
-        }
-    }
-
-    private func clearScreenCaptureActivationObserver() {
-        if let screenCaptureActivationObserver {
-            NotificationCenter.default.removeObserver(screenCaptureActivationObserver)
-            self.screenCaptureActivationObserver = nil
         }
     }
 
