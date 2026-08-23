@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         AppDelegate.sharedModel?.refreshAccessibility()
+        AppDelegate.sharedModel?.refreshScreenCapturePermission()
         // Never let the bootstrap / stray Settings-style window reappear on activate.
         Self.hideBootstrapWindows()
     }
@@ -51,7 +52,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        GlobalHotKey.shared.unregister()
         AppDelegate.sharedModel?.stop()
     }
 }
@@ -331,7 +331,7 @@ struct HistoryPanel: View {
                 Text("复制文字或截图后，会出现在这里")
                     .font(.system(size: 12, weight: .regular, design: .rounded))
                     .foregroundStyle(LCTheme.textTertiary)
-                Text("\(GlobalHotKey.displayLabel) 可随时唤出面板")
+                Text("\(HotKeyShortcut.historyDefault.displayLabel) 可随时唤出面板")
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(LCTheme.ink.opacity(0.85))
             }
@@ -354,7 +354,7 @@ struct HistoryPanel: View {
 
                 Spacer()
 
-                Text(GlobalHotKey.displayLabel)
+                Text(HotKeyShortcut.historyDefault.displayLabel)
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(LCTheme.ink)
                     .padding(.horizontal, 6)
@@ -559,7 +559,69 @@ struct SettingsView: View {
                     }
                 }
 
-                settingsGroup(title: "权限", subtitle: "自动粘贴需要辅助功能授权") {
+                settingsGroup(
+                    title: "快速截屏",
+                    subtitle: "选区会复制到剪贴板，并直接加入 LocalClip 历史"
+                ) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        settingsRow {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("启用全局快捷键")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(LCTheme.textPrimary)
+                                Text("关闭后仍可从菜单栏右键菜单截屏")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(LCTheme.textSecondary)
+                            }
+                            Spacer()
+                            Toggle("", isOn: screenshotHotKeyEnabledBinding)
+                                .toggleStyle(.switch)
+                                .labelsHidden()
+                        }
+
+                        Divider().overlay(LCTheme.border)
+
+                        settingsRow {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("快捷键")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(LCTheme.textPrimary)
+                                Text("点击右侧后按下新组合，Esc 取消")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(LCTheme.textSecondary)
+                            }
+                            Spacer()
+                            HotKeyRecorderView(
+                                shortcut: model.screenshotHotKey,
+                                onBegin: { model.beginScreenshotHotKeyRecording() },
+                                onCancel: { model.cancelScreenshotHotKeyRecording() },
+                                onRecord: { shortcut in
+                                    finishScreenshotShortcutRecording(shortcut)
+                                }
+                            )
+                            .fixedSize()
+                        }
+
+                        HStack {
+                            minimalButton("恢复 \(HotKeyShortcut.screenshotDefault.displayLabel)") {
+                                _ = applyScreenshotShortcut(.screenshotDefault)
+                            }
+                            Spacer()
+                        }
+
+                        if let error = model.screenshotHotKeyError {
+                            Text(error)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(LCTheme.danger)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
+                settingsGroup(
+                    title: "权限",
+                    subtitle: "自动粘贴与区域截屏分别使用系统权限"
+                ) {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Text(model.accessibilityTrusted ? "辅助功能：已就绪" : "辅助功能：未授权")
@@ -574,7 +636,28 @@ struct SettingsView: View {
                             minimalButton("检查") { model.refreshAccessibility() }
                             minimalButton("系统设置") { AccessibilityPaste.openSystemSettings() }
                         }
-                        minimalButton("退出并重新打开", fullWidth: true) {
+
+                        Divider().overlay(LCTheme.border)
+
+                        HStack {
+                            Text(
+                                model.screenCaptureAuthorized
+                                    ? "屏幕录制：已就绪"
+                                    : "屏幕录制：首次截屏时请求"
+                            )
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(LCTheme.textPrimary)
+                            Spacer()
+                            Circle()
+                                .fill(model.screenCaptureAuthorized ? LCTheme.success : LCTheme.warning)
+                                .frame(width: 8, height: 8)
+                        }
+                        HStack(spacing: 8) {
+                            minimalButton("检查") { model.refreshScreenCapturePermission() }
+                            minimalButton("系统设置") { model.openScreenCaptureSettings() }
+                        }
+
+                        minimalButton("退出并重新打开（刷新辅助功能）", fullWidth: true) {
                             AccessibilityPaste.relaunchCurrentApp()
                         }
                     }
@@ -674,12 +757,16 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(LCTheme.bg)
-        .frame(minWidth: 480, idealWidth: 520, minHeight: 560, idealHeight: 640)
+        .frame(minWidth: 480, idealWidth: 520, minHeight: 660, idealHeight: 760)
         .onAppear {
             launchAtLogin = model.settings.launchAtLogin
             retentionMaxItems = model.settings.maxItems
             retentionMaxAgeDays = model.settings.maxAgeDays
             model.refreshAccessibility()
+            model.refreshScreenCapturePermission()
+        }
+        .onDisappear {
+            model.cancelScreenshotHotKeyRecording()
         }
         .alert("清理并应用新的保留设置？", isPresented: $showsRetentionConfirmation) {
             Button("取消", role: .cancel) {
@@ -701,6 +788,40 @@ struct SettingsView: View {
 
     private var isRetentionControlsDisabled: Bool {
         isApplyingRetention || model.isUpdatingRetention
+    }
+
+    private var screenshotHotKeyEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.screenshotHotKeyEnabled },
+            set: { enabled in
+                _ = model.updateScreenshotHotKey(
+                    enabled: enabled,
+                    shortcut: model.screenshotHotKey
+                )
+            }
+        )
+    }
+
+    @discardableResult
+    private func applyScreenshotShortcut(_ shortcut: HotKeyShortcut) -> Bool {
+        switch model.updateScreenshotHotKey(
+            enabled: model.screenshotHotKeyEnabled,
+            shortcut: shortcut
+        ) {
+        case .success:
+            return true
+        case .failure:
+            return false
+        }
+    }
+
+    private func finishScreenshotShortcutRecording(_ shortcut: HotKeyShortcut) -> Bool {
+        switch model.finishScreenshotHotKeyRecording(shortcut: shortcut) {
+        case .success:
+            return true
+        case .failure:
+            return false
+        }
     }
 
     private var retentionMaxItemsBinding: Binding<Int> {

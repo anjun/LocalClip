@@ -9,13 +9,17 @@ public struct AppSettings: Equatable, Sendable {
     public var maxAgeDays: Int
     public var plainTextPaste: Bool
     public var launchAtLogin: Bool
+    public var screenshotHotKeyEnabled: Bool
+    public var screenshotHotKey: HotKeyShortcut
 
     public static let `default` = AppSettings(
         pollIntervalMs: 400,
         maxItems: 200,
         maxAgeDays: 7,
         plainTextPaste: false,
-        launchAtLogin: true
+        launchAtLogin: true,
+        screenshotHotKeyEnabled: true,
+        screenshotHotKey: .screenshotDefault
     )
 
     public init(
@@ -23,13 +27,17 @@ public struct AppSettings: Equatable, Sendable {
         maxItems: Int = 200,
         maxAgeDays: Int = 7,
         plainTextPaste: Bool = false,
-        launchAtLogin: Bool = true
+        launchAtLogin: Bool = true,
+        screenshotHotKeyEnabled: Bool = true,
+        screenshotHotKey: HotKeyShortcut = .screenshotDefault
     ) {
         self.pollIntervalMs = pollIntervalMs
         self.maxItems = maxItems
         self.maxAgeDays = maxAgeDays
         self.plainTextPaste = plainTextPaste
         self.launchAtLogin = launchAtLogin
+        self.screenshotHotKeyEnabled = screenshotHotKeyEnabled
+        self.screenshotHotKey = screenshotHotKey
     }
 
     public var pollInterval: TimeInterval {

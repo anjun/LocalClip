@@ -14,32 +14,31 @@ public final class SystemPasteboard: PasteboardWriting {
         board.changeCount
     }
 
-    public func writeText(_ text: String) {
+    @discardableResult
+    public func writeText(_ text: String) -> Bool {
         board.clearContents()
-        board.setString(text, forType: .string)
+        return board.setString(text, forType: .string)
     }
 
-    public func writeImageData(_ data: Data) {
+    @discardableResult
+    public func writeImageData(_ data: Data) -> Bool {
         board.clearContents()
         // Prefer raw bytes — never decode multi‑megapixel images on the main thread.
         if isPNG(data) {
-            board.setData(data, forType: .png)
-            return
+            return board.setData(data, forType: .png)
         }
         if isTIFF(data) {
-            board.setData(data, forType: .tiff)
-            return
+            return board.setData(data, forType: .tiff)
         }
         if isJPEG(data) {
             // public.jpeg is widely accepted; avoid NSImage round-trip.
-            board.setData(data, forType: NSPasteboard.PasteboardType("public.jpeg"))
-            return
+            return board.setData(data, forType: NSPasteboard.PasteboardType("public.jpeg"))
         }
         // Last resort: re-encode via ImageIO (thread-safe) rather than NSImage.
         if let png = ThumbnailMaker.pngData(from: data) {
-            board.setData(png, forType: .png)
+            return board.setData(png, forType: .png)
         } else {
-            board.setData(data, forType: .png)
+            return board.setData(data, forType: .png)
         }
     }
 

@@ -12,6 +12,48 @@ private struct PersistedSettingsFixture: Codable {
     var launchAtLogin: Bool
 }
 
+private struct PersistedScreenshotSettingsFixture: Codable {
+    var pollIntervalMs: Int
+    var maxItems: Int
+    var maxAgeDays: Int
+    var plainTextPaste: Bool
+    var launchAtLogin: Bool
+    var screenshotHotKeyEnabled: Bool
+    var screenshotHotKey: HotKeyShortcut
+}
+
+private final class ControlledHotKeyRegistrar: HotKeyRegistering {
+    struct Entry {
+        let shortcut: HotKeyShortcut
+        let handler: () -> Void
+    }
+
+    var entries: [UUID: Entry] = [:]
+    var nextFailure: HotKeyRegistrationError?
+    var failuresByShortcut: [HotKeyShortcut: HotKeyRegistrationError] = [:]
+
+    func register(
+        shortcut: HotKeyShortcut,
+        handler: @escaping () -> Void
+    ) -> Result<HotKeyRegistration, HotKeyRegistrationError> {
+        if let failure = failuresByShortcut.removeValue(forKey: shortcut) {
+            return .failure(failure)
+        }
+        if let failure = nextFailure {
+            nextFailure = nil
+            return .failure(failure)
+        }
+        if entries.values.contains(where: { $0.shortcut == shortcut }) {
+            return .failure(.conflict)
+        }
+        let id = UUID()
+        entries[id] = Entry(shortcut: shortcut, handler: handler)
+        return .success(HotKeyRegistration { [weak self] in
+            self?.entries.removeValue(forKey: id)
+        })
+    }
+}
+
 // Lightweight test runner (no XCTest — works with Command Line Tools only).
 // Exercises shipped LocalClipCore types only.
 
@@ -26,8 +68,12 @@ struct LocalClipTestRunner {
         runGuardTests()
         runHasherAndOrdering()
         runSelectionTests()
+        runHotKeyShortcutTests()
+        runHotKeyManagerTests()
+        runScreenshotCaptureTests()
         runUpdateCheckerTests()
         runAppModelRetentionTests()
+        runScreenshotHotKeySettingsTests()
         runAppModelSearchTests()
         runAppModelPanelOpenSearchResetTests()
         runPanelOpenFocusTests()
@@ -979,6 +1025,40 @@ struct LocalClipTestRunner {
             plainTextMode: false
         )
         expect(guard_.shouldIgnore(changeCount: board3.changeCount), "self-write suppress after paste")
+
+        final class RejectingPasteboard: PasteboardWriting {
+            var changeCount = 20
+            func writeText(_ text: String) -> Bool {
+                changeCount += 1
+                return false
+            }
+            func writeImageData(_ data: Data) -> Bool {
+                changeCount += 1
+                return false
+            }
+        }
+        let rejectingBoard = RejectingPasteboard()
+        let rejectingGuard = SelfWriteGuard()
+        var rejectedKeystroke = false
+        let rejectingService = PasteService(
+            accessibilityChecker: { true },
+            pasteboard: rejectingBoard,
+            keystroke: { rejectedKeystroke = true },
+            selfWriteGuard: rejectingGuard
+        )
+        expect(
+            rejectingService.paste(
+                item: textItem,
+                imageData: nil,
+                plainTextMode: false
+            ) == .failed,
+            "pasteboard rejection reports paste failure"
+        )
+        expect(!rejectedKeystroke, "pasteboard rejection does not send Command-V")
+        expect(
+            !rejectingGuard.shouldIgnore(changeCount: rejectingBoard.changeCount),
+            "pasteboard rejection clears paste self-write guard"
+        )
     }
 
     static func runGuardTests() {
@@ -1149,6 +1229,11 @@ struct LocalClipTestRunner {
                             && sanitized.settings.plainTextPaste
                             && !sanitized.settings.launchAtLogin,
                         "sanitizing retention preserves unrelated persisted settings"
+                    )
+                    expect(
+                        sanitized.settings.screenshotHotKeyEnabled
+                            && sanitized.settings.screenshotHotKey == .screenshotDefault,
+                        "legacy v1 settings gain the default enabled screenshot shortcut"
                     )
                     let rewrittenData = userDefaults.data(forKey: defaultsKey)
                     let rewritten = try rewrittenData.map {
@@ -1363,6 +1448,207 @@ struct LocalClipTestRunner {
         } else if !state.finished {
             expect(false, "appmodel retention async test completed")
         }
+    }
+
+    static func runScreenshotHotKeySettingsTests() {
+        print("--- screenshot hotkey settings ---")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LC-screenshot-settings-\(UUID().uuidString)", isDirectory: true)
+        let suiteName = "LocalClipTests.ScreenshotSettings.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            expect(false, "screenshot settings defaults suite created")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        final class State: @unchecked Sendable {
+            var setupError: String?
+            var finished = false
+        }
+        let state = State()
+
+        DispatchQueue.main.async {
+            Task { @MainActor in
+                do {
+                    let defaultsKey = "LocalClip.AppSettings.v1"
+                    defaults.set(
+                        try JSONEncoder().encode(
+                            PersistedScreenshotSettingsFixture(
+                                pollIntervalMs: 725,
+                                maxItems: 321,
+                                maxAgeDays: 23,
+                                plainTextPaste: true,
+                                launchAtLogin: false,
+                                screenshotHotKeyEnabled: true,
+                                screenshotHotKey: HotKeyShortcut(
+                                    keyCode: 999,
+                                    modifiers: .option
+                                )
+                            )
+                        ),
+                        forKey: defaultsKey
+                    )
+                    let registrar = ControlledHotKeyRegistrar()
+                    let manager = HotKeyManager(registrar: registrar)
+                    manager.setHandler(for: .regionScreenshot) {}
+                    _ = manager.activate(.regionScreenshot, shortcut: .screenshotDefault)
+                    let model = try AppModel(
+                        storeRoot: root,
+                        userDefaults: defaults,
+                        hotKeyManager: manager
+                    )
+                    expect(
+                        model.settings.screenshotHotKey == .screenshotDefault,
+                        "invalid persisted screenshot shortcut resets to Option-A"
+                    )
+                    expect(
+                        model.settings.pollIntervalMs == 725
+                            && model.settings.maxItems == 321
+                            && model.settings.maxAgeDays == 23
+                            && model.settings.plainTextPaste
+                            && !model.settings.launchAtLogin,
+                        "shortcut sanitization preserves unrelated settings"
+                    )
+                    let rewrittenData = defaults.data(forKey: defaultsKey)
+                    let rewritten = try rewrittenData.map {
+                        try JSONDecoder().decode(PersistedScreenshotSettingsFixture.self, from: $0)
+                    }
+                    expect(
+                        rewritten?.screenshotHotKey == .screenshotDefault,
+                        "sanitized screenshot shortcut is rewritten"
+                    )
+
+                    model.configureGlobalHotKeys(
+                        onHistoryPanel: {},
+                        onRegionScreenshot: {}
+                    )
+                    model.beginScreenshotHotKeyRecording()
+                    expect(
+                        manager.activeShortcut(for: .historyPanel) == nil
+                            && manager.activeShortcut(for: .regionScreenshot) == nil,
+                        "shortcut recording temporarily releases global bindings"
+                    )
+                    let rejectedRecordingShortcut = HotKeyShortcut(
+                        keyCode: 45,
+                        modifiers: [.control, .option]
+                    )
+                    registrar.failuresByShortcut[rejectedRecordingShortcut] = .conflict
+                    let rejectedRecording = model.finishScreenshotHotKeyRecording(
+                        shortcut: rejectedRecordingShortcut
+                    )
+                    if case .failure(.conflict) = rejectedRecording {
+                        expect(true, "recording reports a conflicting candidate")
+                    } else {
+                        expect(false, "recording reports a conflicting candidate")
+                    }
+                    expect(
+                        manager.activeShortcut(for: .historyPanel) == .historyDefault
+                            && manager.activeShortcut(for: .regionScreenshot) == .screenshotDefault
+                            && model.settings.screenshotHotKey == .screenshotDefault,
+                        "failed recording restores both prior bindings and settings"
+                    )
+                    model.beginScreenshotHotKeyRecording()
+                    model.cancelScreenshotHotKeyRecording()
+                    expect(
+                        manager.activeShortcut(for: .historyPanel) == .historyDefault
+                            && manager.activeShortcut(for: .regionScreenshot) == .screenshotDefault,
+                        "cancelling shortcut recording restores prior bindings"
+                    )
+
+                    let startupSuite = "\(suiteName).Startup"
+                    if let startupDefaults = UserDefaults(suiteName: startupSuite) {
+                        startupDefaults.removePersistentDomain(forName: startupSuite)
+                        defer { startupDefaults.removePersistentDomain(forName: startupSuite) }
+                        let startupRegistrar = ControlledHotKeyRegistrar()
+                        startupRegistrar.failuresByShortcut[.screenshotDefault] = .conflict
+                        let startupManager = HotKeyManager(registrar: startupRegistrar)
+                        let startupModel = try AppModel(
+                            storeRoot: root.appendingPathComponent("startup", isDirectory: true),
+                            userDefaults: startupDefaults,
+                            hotKeyManager: startupManager
+                        )
+                        startupModel.configureGlobalHotKeys(
+                            onHistoryPanel: {},
+                            onRegionScreenshot: {}
+                        )
+                        expect(
+                            startupManager.activeShortcut(for: .historyPanel) == .historyDefault,
+                            "screenshot startup conflict does not disable the history hotkey"
+                        )
+                        expect(
+                            startupManager.activeShortcut(for: .regionScreenshot) == nil
+                                && startupModel.screenshotHotKeyError != nil,
+                            "screenshot startup conflict disables only its runtime binding"
+                        )
+                    } else {
+                        expect(false, "startup conflict defaults suite created")
+                    }
+
+                    let custom = HotKeyShortcut(keyCode: 11, modifiers: [.command, .shift])
+                    let applied = model.updateScreenshotHotKey(enabled: true, shortcut: custom)
+                    if case .success = applied {
+                        expect(true, "custom screenshot shortcut registers")
+                    } else {
+                        expect(false, "custom screenshot shortcut registers")
+                    }
+                    expect(
+                        model.settings.screenshotHotKeyEnabled
+                            && model.settings.screenshotHotKey == custom,
+                        "successful shortcut replacement updates model settings"
+                    )
+                    expect(
+                        manager.activeShortcut(for: .regionScreenshot) == custom,
+                        "successful shortcut replacement updates active registration"
+                    )
+
+                    registrar.nextFailure = .conflict
+                    let rejected = model.updateScreenshotHotKey(
+                        enabled: true,
+                        shortcut: HotKeyShortcut(keyCode: 45, modifiers: .option)
+                    )
+                    if case .failure(.conflict) = rejected {
+                        expect(true, "conflicting screenshot shortcut reports conflict")
+                    } else {
+                        expect(false, "conflicting screenshot shortcut reports conflict")
+                    }
+                    expect(
+                        model.settings.screenshotHotKey == custom
+                            && manager.activeShortcut(for: .regionScreenshot) == custom,
+                        "failed shortcut replacement preserves settings and registration"
+                    )
+
+                    let restored = try AppModel(storeRoot: root, userDefaults: defaults)
+                    expect(
+                        restored.settings.screenshotHotKeyEnabled
+                            && restored.settings.screenshotHotKey == custom,
+                        "successful screenshot shortcut persists across model recreation"
+                    )
+
+                    _ = model.updateScreenshotHotKey(enabled: false, shortcut: custom)
+                    expect(
+                        !model.settings.screenshotHotKeyEnabled
+                            && manager.activeShortcut(for: .regionScreenshot) == nil,
+                        "disabling screenshot shortcut persists and unregisters it"
+                    )
+                } catch {
+                    state.setupError = "\(error)"
+                }
+                state.finished = true
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(4)
+        while !state.finished, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        if let error = state.setupError {
+            expect(false, "screenshot hotkey settings setup: \(error)")
+        }
+        expect(state.finished, "screenshot hotkey settings test completed")
     }
 
     /// Search box must not run a synchronous full refresh on every keystroke / IME update.
@@ -1649,5 +1935,425 @@ struct LocalClipTestRunner {
             HistoryPanelKeyRouting.decision(keyCode: 0) == .typeInSearch,
             "letter keys stay in the search field"
         )
+    }
+
+    static func runHotKeyShortcutTests() {
+        print("--- hotkey shortcut ---")
+
+        expect(
+            HotKeyShortcut.screenshotDefault.displayLabel == "⌥A",
+            "screenshot shortcut defaults to Option-A"
+        )
+        expect(
+            HotKeyShortcut.historyDefault.displayLabel == "⌥C",
+            "history shortcut remains Option-C"
+        )
+        expect(
+            HotKeyShortcut.screenshotDefault.validationError == nil,
+            "default screenshot shortcut is valid"
+        )
+
+        let bareA = HotKeyShortcut(keyCode: 0, modifiers: [])
+        expect(
+            bareA.validationError == .missingModifier,
+            "bare letter shortcut is rejected"
+        )
+
+        let unknownModifiers = HotKeyShortcut(
+            keyCode: 0,
+            modifiers: HotKeyModifiers(rawValue: 1 << 12)
+        )
+        expect(
+            unknownModifiers.validationError == .unsupportedModifiers,
+            "unknown shortcut modifiers are rejected"
+        )
+
+        expect(
+            HotKeyShortcut(keyCode: 11, modifiers: [.command, .shift]).displayLabel == "⇧⌘B",
+            "custom letter shortcut uses standard modifier order and readable key label"
+        )
+        expect(
+            HotKeyShortcut(keyCode: 123, modifiers: [.control, .option]).displayLabel == "⌃⌥←",
+            "arrow shortcut uses a readable symbol"
+        )
+        expect(
+            HotKeyShortcut(keyCode: 122, modifiers: .option).displayLabel == "⌥F1",
+            "function-key shortcut uses a readable label"
+        )
+        expect(
+            HotKeyShortcut(keyCode: 55, modifiers: .option).validationError == .unsupportedKey,
+            "modifier-only shortcut key is rejected"
+        )
+        expect(
+            HotKeyShortcut(keyCode: 999, modifiers: .option).validationError == .unsupportedKey,
+            "unknown shortcut key code is rejected"
+        )
+    }
+
+    static func runHotKeyManagerTests() {
+        print("--- hotkey manager ---")
+
+        final class FakeRegistrar: HotKeyRegistering {
+            struct Entry {
+                let shortcut: HotKeyShortcut
+                let handler: () -> Void
+            }
+
+            var entries: [UUID: Entry] = [:]
+            var nextFailure: HotKeyRegistrationError?
+
+            func register(
+                shortcut: HotKeyShortcut,
+                handler: @escaping () -> Void
+            ) -> Result<HotKeyRegistration, HotKeyRegistrationError> {
+                if let failure = nextFailure {
+                    nextFailure = nil
+                    return .failure(failure)
+                }
+                if entries.values.contains(where: { $0.shortcut == shortcut }) {
+                    return .failure(.conflict)
+                }
+                let id = UUID()
+                entries[id] = Entry(shortcut: shortcut, handler: handler)
+                return .success(HotKeyRegistration { [weak self] in
+                    self?.entries.removeValue(forKey: id)
+                })
+            }
+
+            func fire(_ shortcut: HotKeyShortcut) {
+                entries.values.first(where: { $0.shortcut == shortcut })?.handler()
+            }
+        }
+
+        let registrar = FakeRegistrar()
+        let manager = HotKeyManager(registrar: registrar)
+        var fired: [HotKeyAction] = []
+        manager.setHandler(for: .historyPanel) { fired.append(.historyPanel) }
+        manager.setHandler(for: .regionScreenshot) { fired.append(.regionScreenshot) }
+
+        func succeeded(_ result: Result<Void, HotKeyRegistrationError>) -> Bool {
+            if case .success = result { return true }
+            return false
+        }
+
+        func failed(
+            _ result: Result<Void, HotKeyRegistrationError>,
+            with expected: HotKeyRegistrationError
+        ) -> Bool {
+            if case .failure(let actual) = result { return actual == expected }
+            return false
+        }
+
+        expect(
+            succeeded(manager.activate(.historyPanel, shortcut: .historyDefault)),
+            "history hotkey registers"
+        )
+        expect(
+            succeeded(manager.activate(.regionScreenshot, shortcut: .screenshotDefault)),
+            "screenshot hotkey registers independently"
+        )
+        registrar.fire(.historyDefault)
+        registrar.fire(.screenshotDefault)
+        expect(
+            fired == [.historyPanel, .regionScreenshot],
+            "registered hotkeys dispatch their own actions"
+        )
+
+        let replacement = HotKeyShortcut(keyCode: 11, modifiers: [.command, .shift])
+        registrar.nextFailure = .conflict
+        let replacementResult = manager.activate(.regionScreenshot, shortcut: replacement)
+        expect(
+            failed(replacementResult, with: .conflict),
+            "conflicting replacement is rejected"
+        )
+        expect(
+            manager.activeShortcut(for: .regionScreenshot) == .screenshotDefault,
+            "failed replacement preserves the previous screenshot shortcut"
+        )
+
+        fired.removeAll()
+        registrar.fire(.screenshotDefault)
+        expect(
+            fired == [.regionScreenshot],
+            "previous screenshot shortcut remains live after replacement failure"
+        )
+    }
+
+    static func runScreenshotCaptureTests() {
+        print("--- screenshot capture ---")
+        let commandOutput = URL(fileURLWithPath: "/tmp/LocalClip-command-test.png")
+        let commandArguments = MacOSScreenshotSystem.captureArguments(to: commandOutput)
+        expect(
+            commandArguments == ["-i", "-s", "-t", "png", commandOutput.path],
+            "macOS command uses interactive region-only PNG capture"
+        )
+        expect(
+            !commandArguments.contains("-x")
+                && !commandArguments.contains("-C")
+                && !commandArguments.contains("-c"),
+            "macOS command keeps system sound, omits cursor, and writes only its temp file"
+        )
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LC-screenshot-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        final class FakeScreenshotSystem: ScreenshotSystem {
+            var authorized = true
+            var requestResult = true
+            var requestCount = 0
+            var writesImage = true
+            var lastOutputURL: URL?
+            var imageData = LocalClipTestRunner.tinyPNG()
+
+            func preflightAccess() -> Bool { authorized }
+            func requestAccess() -> Bool {
+                requestCount += 1
+                authorized = requestResult
+                return requestResult
+            }
+            func captureRegion(to outputURL: URL) async throws -> ScreenshotProcessResult {
+                lastOutputURL = outputURL
+                if writesImage {
+                    try imageData.write(to: outputURL, options: .atomic)
+                }
+                return ScreenshotProcessResult(terminationStatus: 0, standardError: "")
+            }
+            func openSystemSettings() {}
+        }
+
+        final class SuspendedScreenshotSystem: ScreenshotSystem {
+            var outputURL: URL?
+            var continuation: CheckedContinuation<ScreenshotProcessResult, Error>?
+
+            func preflightAccess() -> Bool { true }
+            func requestAccess() -> Bool { true }
+            func captureRegion(to outputURL: URL) async throws -> ScreenshotProcessResult {
+                self.outputURL = outputURL
+                return try await withCheckedThrowingContinuation { continuation in
+                    self.continuation = continuation
+                }
+            }
+            func openSystemSettings() {}
+
+            func finish(with data: Data) throws {
+                guard let outputURL, let continuation else { return }
+                try data.write(to: outputURL, options: .atomic)
+                self.continuation = nil
+                continuation.resume(returning: ScreenshotProcessResult(
+                    terminationStatus: 0,
+                    standardError: ""
+                ))
+            }
+        }
+
+        final class FailingPasteboard: PasteboardWriting {
+            var changeCount = 40
+            func writeText(_ text: String) -> Bool {
+                changeCount += 1
+                return false
+            }
+            func writeImageData(_ data: Data) -> Bool {
+                changeCount += 1
+                return false
+            }
+        }
+
+        final class State: @unchecked Sendable {
+            var setupError: String?
+            var finished = false
+        }
+        let state = State()
+
+        DispatchQueue.main.async {
+            Task { @MainActor in
+                do {
+                    let store = try ClipboardStore(
+                        rootURL: root.appendingPathComponent("store", isDirectory: true),
+                        settings: .default
+                    )
+                    store.pruneExecutor = { work in work() }
+                    let board = MockPasteboard()
+                    let selfWriteGuard = SelfWriteGuard()
+                    let system = FakeScreenshotSystem()
+                    let capture = ScreenshotCapture(
+                        store: store,
+                        pasteboard: board,
+                        selfWriteGuard: selfWriteGuard,
+                        system: system,
+                        temporaryDirectory: root.appendingPathComponent("capture", isDirectory: true)
+                    )
+
+                    let first = await capture.captureRegion()
+                    expect(
+                        first == .captured(history: .inserted),
+                        "successful screenshot reports clipboard and history success"
+                    )
+                    expect(board.lastImage == system.imageData, "successful screenshot writes PNG to clipboard")
+                    expect(try store.allItems().count == 1, "successful screenshot writes one history row")
+                    expect(
+                        selfWriteGuard.shouldIgnore(changeCount: board.changeCount),
+                        "successful screenshot suppresses clipboard monitor re-ingest"
+                    )
+                    expect(
+                        system.lastOutputURL.map {
+                            !FileManager.default.fileExists(atPath: $0.path)
+                        } == true,
+                        "successful screenshot removes its temporary PNG"
+                    )
+
+                    let duplicate = await capture.captureRegion()
+                    expect(
+                        duplicate == .captured(history: .deduplicated),
+                        "adjacent identical screenshot uses existing image dedupe"
+                    )
+                    expect(try store.allItems().count == 1, "duplicate screenshot does not add a history row")
+
+                    let changeCountBeforeCancel = board.changeCount
+                    system.writesImage = false
+                    let cancelled = await capture.captureRegion()
+                    expect(cancelled == .cancelled, "Esc-style capture without an output file is cancelled")
+                    expect(
+                        try board.changeCount == changeCountBeforeCancel && store.allItems().count == 1,
+                        "cancelled screenshot leaves clipboard and history unchanged"
+                    )
+
+                    let deniedSystem = FakeScreenshotSystem()
+                    deniedSystem.authorized = false
+                    deniedSystem.requestResult = false
+                    let deniedCapture = ScreenshotCapture(
+                        store: store,
+                        pasteboard: board,
+                        selfWriteGuard: selfWriteGuard,
+                        system: deniedSystem,
+                        temporaryDirectory: root.appendingPathComponent("denied", isDirectory: true)
+                    )
+                    expect(
+                        await deniedCapture.captureRegion() == .permissionDenied,
+                        "first denied screenshot reports screen recording permission"
+                    )
+                    expect(
+                        await deniedCapture.captureRegion() == .permissionDenied
+                            && deniedSystem.requestCount == 1,
+                        "denied permission is requested only once per app run"
+                    )
+
+                    let failingBoard = FailingPasteboard()
+                    let failingBoardGuard = SelfWriteGuard()
+                    let failingBoardSystem = FakeScreenshotSystem()
+                    failingBoardSystem.imageData = uniquePNG(41)
+                    let countBeforeClipboardFailure = try store.allItems().count
+                    let failingBoardCapture = ScreenshotCapture(
+                        store: store,
+                        pasteboard: failingBoard,
+                        selfWriteGuard: failingBoardGuard,
+                        system: failingBoardSystem,
+                        temporaryDirectory: root.appendingPathComponent(
+                            "clipboard-failure",
+                            isDirectory: true
+                        )
+                    )
+                    expect(
+                        await failingBoardCapture.captureRegion() == .failed(.clipboardWrite),
+                        "clipboard write failure is reported"
+                    )
+                    expect(
+                        try store.allItems().count == countBeforeClipboardFailure,
+                        "clipboard write failure does not add screenshot history"
+                    )
+                    expect(
+                        !failingBoardGuard.shouldIgnore(changeCount: failingBoard.changeCount),
+                        "clipboard write failure clears the self-write guard"
+                    )
+
+                    let suspendedSystem = SuspendedScreenshotSystem()
+                    let suspendedCapture = ScreenshotCapture(
+                        store: store,
+                        pasteboard: board,
+                        selfWriteGuard: selfWriteGuard,
+                        system: suspendedSystem,
+                        temporaryDirectory: root.appendingPathComponent("suspended", isDirectory: true)
+                    )
+                    let firstCapture = Task { @MainActor in
+                        await suspendedCapture.captureRegion()
+                    }
+                    while suspendedSystem.continuation == nil {
+                        await Task.yield()
+                    }
+                    expect(
+                        await suspendedCapture.captureRegion() == .ignoredAlreadyCapturing,
+                        "second screenshot trigger is ignored while selection is active"
+                    )
+                    try suspendedSystem.finish(with: uniquePNG(71))
+                    expect(
+                        await firstCapture.value == .captured(history: .inserted),
+                        "active screenshot completes after ignored duplicate trigger"
+                    )
+
+                    var lockingDB: OpaquePointer?
+                    let databasePath = root
+                        .appendingPathComponent("store", isDirectory: true)
+                        .appendingPathComponent("db.sqlite")
+                        .path
+                    guard sqlite3_open_v2(
+                        databasePath,
+                        &lockingDB,
+                        SQLITE_OPEN_READWRITE,
+                        nil
+                    ) == SQLITE_OK else {
+                        expect(false, "screenshot partial failure opens independent SQLite connection")
+                        state.finished = true
+                        return
+                    }
+                    defer { sqlite3_close(lockingDB) }
+                    expect(
+                        sqlite3_exec(lockingDB, "BEGIN EXCLUSIVE;", nil, nil, nil) == SQLITE_OK,
+                        "screenshot partial failure locks history database"
+                    )
+                    let partialSystem = FakeScreenshotSystem()
+                    partialSystem.imageData = uniquePNG(99)
+                    let partialCapture = ScreenshotCapture(
+                        store: store,
+                        pasteboard: board,
+                        selfWriteGuard: selfWriteGuard,
+                        system: partialSystem,
+                        temporaryDirectory: root.appendingPathComponent("partial", isDirectory: true)
+                    )
+                    let partial = await partialCapture.captureRegion()
+                    if case .captured(history: .failed) = partial {
+                        expect(true, "history failure preserves the successful clipboard screenshot")
+                    } else {
+                        expect(false, "history failure preserves the successful clipboard screenshot")
+                    }
+                    expect(
+                        board.lastImage == partialSystem.imageData,
+                        "history failure leaves captured PNG on the clipboard"
+                    )
+                    expect(
+                        partialSystem.lastOutputURL.map {
+                            !FileManager.default.fileExists(atPath: $0.path)
+                        } == true,
+                        "history failure still removes the temporary PNG"
+                    )
+                    expect(
+                        sqlite3_exec(lockingDB, "ROLLBACK;", nil, nil, nil) == SQLITE_OK,
+                        "screenshot partial failure releases history database lock"
+                    )
+                    sqlite3_close(lockingDB)
+                    lockingDB = nil
+                } catch {
+                    state.setupError = "\(error)"
+                }
+                state.finished = true
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(4)
+        while !state.finished, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        if let error = state.setupError {
+            expect(false, "screenshot capture setup: \(error)")
+        }
+        expect(state.finished, "screenshot capture test completed")
     }
 }

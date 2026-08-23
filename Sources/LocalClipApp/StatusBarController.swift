@@ -3,7 +3,7 @@ import SwiftUI
 import LocalClipCore
 
 /// AppKit status item: left-click opens panel, right-click shows menu (Quit, etc.).
-/// Global hotkey ⌥C toggles the same popover.
+/// Global hotkeys open history (⌥C) and start region capture (configurable, default ⌥A).
 @MainActor
 final class StatusBarController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
@@ -22,6 +22,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     /// Menu item tags — only these exact items may open prefs / updates.
     private enum MenuTag: Int {
+        case regionScreenshot = 1000
         case preferences = 1001
         case checkUpdates = 1002
     }
@@ -36,7 +37,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if let button = item.button {
             button.image = Self.makeStatusBarImage()
             button.image?.isTemplate = true
-            button.toolTip = "LocalClip · \(GlobalHotKey.displayLabel)"
+            button.toolTip = "LocalClip · \(HotKeyShortcut.historyDefault.displayLabel) 打开历史"
             button.target = self
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -72,18 +73,22 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             self?.closePopover()
         }
 
-        installGlobalHotKey()
+        installGlobalHotKeys()
     }
 
-    private func installGlobalHotKey() {
-        GlobalHotKey.shared.onPressed = { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.togglePopover()
+    private func installGlobalHotKeys() {
+        model.configureGlobalHotKeys(
+            onHistoryPanel: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.togglePopover()
+                }
+            },
+            onRegionScreenshot: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.beginRegionScreenshot()
+                }
             }
-        }
-        if !GlobalHotKey.shared.registerOptionC() {
-            model.statusMessage = "快捷键 \(GlobalHotKey.displayLabel) 注册失败：请检查辅助功能权限后重启"
-        }
+        )
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
@@ -117,6 +122,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         // No keyEquivalents on any item — empty keyEquivalent prevents system shortcuts
         // (especially "," for Preferences) from auto-firing when the menu appears.
+
+        let screenshotItem = NSMenuItem(
+            title: "区域截屏（\(model.screenshotHotKey.displayLabel)）",
+            action: #selector(captureRegionScreenshot(_:)),
+            keyEquivalent: ""
+        )
+        screenshotItem.target = self
+        screenshotItem.tag = MenuTag.regionScreenshot.rawValue
+        screenshotItem.isEnabled = true
+        menu.addItem(screenshotItem)
+        menu.addItem(.separator())
 
         let trustItem = NSMenuItem(
             title: AccessibilityPaste.trustStatusLabel(),
@@ -238,6 +254,44 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         popover?.performClose(nil)
     }
 
+    @objc func captureRegionScreenshot(_ sender: Any?) {
+        if let item = sender as? NSMenuItem,
+           item.tag != MenuTag.regionScreenshot.rawValue {
+            return
+        }
+        beginRegionScreenshot()
+    }
+
+    /// Let a context menu / popover finish disappearing before the system crosshair appears.
+    private func beginRegionScreenshot() {
+        let needsPopoverDelay = popover?.isShown == true
+        closePopover()
+        let delay = needsPopoverDelay ? 0.18 : 0.05
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let outcome = await self.model.captureRegionScreenshot()
+                if case .permissionDenied = outcome {
+                    self.showScreenCapturePermissionAlert()
+                }
+            }
+        }
+    }
+
+    private func showScreenCapturePermissionAlert() {
+        let alert = NSAlert()
+        alert.messageText = "允许 LocalClip 录制屏幕"
+        alert.informativeText = "区域截屏需要“屏幕与系统音频录制”权限。授权后返回 LocalClip，再次按快捷键即可；本次不会自动重试。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            model.openScreenCaptureSettings()
+        }
+    }
+
     @objc func recheckAccessibility(_ sender: Any?) {
         model.refreshAccessibility()
         let trusted = model.accessibilityTrusted
@@ -309,8 +363,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let window = NSWindow(contentViewController: host)
             window.title = "LocalClip 偏好设置"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.setContentSize(NSSize(width: 520, height: 640))
-            window.minSize = NSSize(width: 480, height: 520)
+            window.setContentSize(NSSize(width: 520, height: 760))
+            window.minSize = NSSize(width: 480, height: 600)
             window.isReleasedWhenClosed = false
             window.identifier = NSUserInterfaceItemIdentifier("localclip.preferences")
             window.center()
@@ -320,7 +374,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 rootView: SettingsView().environmentObject(model)
             )
             preferencesWindow?.contentViewController?.view.appearance = NSApp.effectiveAppearance
-            preferencesWindow?.setContentSize(NSSize(width: 520, height: 640))
+            preferencesWindow?.setContentSize(NSSize(width: 520, height: 760))
         }
         LCAppearance.applySystem(to: preferencesWindow)
         preferencesWindow?.makeKeyAndOrderFront(nil)
@@ -337,7 +391,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc func quit(_ sender: Any?) {
-        GlobalHotKey.shared.unregister()
         model.stop()
         NSApp.terminate(nil)
     }

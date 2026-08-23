@@ -13,6 +13,7 @@ Local-only clipboard history for the macOS menu bar. Text and images stay on you
 - **On-device only** — history lives under `~/Library/Application Support/LocalClip/`; no sync, no analytics
 - **Menu bar app** — no Dock icon; open when you need it
 - **Text + images** — screenshots and copy content in one place
+- **Quick capture** — press **⌥A** for the native macOS region selector; the PNG is copied and added to history
 - **Paste in one step** — click or Return writes the pasteboard and auto-pastes (Accessibility)
 - **Auditable** — MIT-licensed; talks to GitHub only when you **Check for Updates**
 
@@ -22,6 +23,8 @@ Download a `.dmg` or `.zip` from [Releases](https://github.com/anjun/LocalClip/r
 
 For auto-paste, enable LocalClip under **System Settings → Privacy & Security → Accessibility**. After changing permissions, right-click the status item → **Quit and reopen**.
 
+The first quick capture requests **Screen & System Audio Recording** access only when needed. After granting it, return to LocalClip and press the shortcut again. LocalClip uses a temporary PNG and deletes it immediately after writing the pasteboard and local history.
+
 Requires macOS 13+ (universal arm64 + x86_64 builds).
 
 ## Usage
@@ -30,11 +33,12 @@ Requires macOS 13+ (universal arm64 + x86_64 builds).
 |--------|--------|
 | Left-click status item | Open history |
 | **⌥C** | Toggle panel globally |
+| **⌥A** | Quick region capture (configurable; can be disabled) |
 | **↑ / ↓** + **Return** | Select and paste |
 | Click a row | Write pasteboard + try auto-paste |
-| Right-click status item | Preferences, updates, quit |
+| Right-click status item | Region capture, preferences, updates, quit |
 
-Search text in the panel; optional plain-text paste (text only). Preferences lets you set the item-count limit and retention duration independently; the default remains **200 items / 7 days**. Choosing a permanent duration disables age-based cleanup, while the item-count limit continues to apply.
+After pressing **⌥A**, drag to select a region; Escape cancels silently. A successful PNG goes to the system pasteboard and normal image history without a preview or Desktop file. Search text in the panel; optional plain-text paste (text only). Preferences lets you record, restore, or disable the capture shortcut and set the item-count limit and retention duration independently; the default remains **200 items / 7 days**. Choosing a permanent duration disables age-based cleanup, while the item-count limit continues to apply.
 
 ## Privacy
 

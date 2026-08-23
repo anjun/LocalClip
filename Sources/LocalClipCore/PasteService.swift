@@ -9,8 +9,8 @@ public enum PasteResult: Equatable, Sendable {
 
 public protocol PasteboardWriting: AnyObject {
     var changeCount: Int { get }
-    func writeText(_ text: String)
-    func writeImageData(_ data: Data)
+    @discardableResult func writeText(_ text: String) -> Bool
+    @discardableResult func writeImageData(_ data: Data) -> Bool
 }
 
 /// Test double for pasteboard.
@@ -21,16 +21,20 @@ public final class MockPasteboard: PasteboardWriting {
 
     public init() {}
 
-    public func writeText(_ text: String) {
+    @discardableResult
+    public func writeText(_ text: String) -> Bool {
         lastText = text
         lastImage = nil
         changeCount += 1
+        return true
     }
 
-    public func writeImageData(_ data: Data) {
+    @discardableResult
+    public func writeImageData(_ data: Data) -> Bool {
         lastImage = data
         lastText = nil
         changeCount += 1
+        return true
     }
 }
 
@@ -79,11 +83,16 @@ public final class PasteService: @unchecked Sendable {
             let nextCount = pasteboard.changeCount + 1
             selfWriteGuard.beginSelfWrite(expectedChangeCountAfter: nextCount, duration: 1.5)
 
+            let didWrite: Bool
             switch payload {
             case .text(let text):
-                pasteboard.writeText(text)
+                didWrite = pasteboard.writeText(text)
             case .image(let data):
-                pasteboard.writeImageData(data)
+                didWrite = pasteboard.writeImageData(data)
+            }
+            guard didWrite else {
+                selfWriteGuard.clear()
+                return .failed
             }
             selfWriteGuard.noteChangeCountToIgnore(pasteboard.changeCount)
 

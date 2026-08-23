@@ -22,6 +22,11 @@ public final class AppModel: ObservableObject {
             persistSettings()
         }
     }
+    @Published public private(set) var screenshotHotKeyEnabled: Bool
+    @Published public private(set) var screenshotHotKey: HotKeyShortcut
+    @Published public private(set) var screenshotHotKeyError: String?
+    @Published public private(set) var screenCaptureAuthorized = false
+    @Published public private(set) var isCapturingScreenshot = false
     @Published public var accessibilityTrusted: Bool = false
     @Published public var statusMessage: String?
     /// Keyboard / visual selection in history list (id of item).
@@ -46,9 +51,12 @@ public final class AppModel: ObservableObject {
     public private(set) var isMonitoring: Bool = false
     private var monitor: ClipboardMonitor?
     private var pasteService: PasteService!
-    private let systemPasteboard = SystemPasteboard()
+    private let systemPasteboard: SystemPasteboard
+    private let screenshotCapture: ScreenshotCapture
     private let defaultsKey = "LocalClip.AppSettings.v1"
     private let userDefaults: UserDefaults
+    private let hotKeyManager: HotKeyManager
+    private var isRecordingScreenshotHotKey = false
     /// Debounce for search box. Overridable in tests.
     public var searchDebounceNanoseconds: UInt64 = 160_000_000
     /// GCD work item — more reliable under CLI/CI run loops than nested Task.sleep.
@@ -61,7 +69,8 @@ public final class AppModel: ObservableObject {
 
     public init(
         storeRoot: URL? = nil,
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        hotKeyManager: HotKeyManager = .shared
     ) throws {
         let root = storeRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LocalClip", isDirectory: true)
@@ -88,15 +97,31 @@ public final class AppModel: ObservableObject {
                 }
                 shouldRewriteSettings = true
             }
+            if loaded.screenshotHotKey.validationError != nil {
+                loaded.screenshotHotKey = .screenshotDefault
+                shouldRewriteSettings = true
+            }
         }
         if shouldRewriteSettings,
            let sanitized = try? JSONEncoder().encode(CodableSettings(settings: loaded)) {
             userDefaults.set(sanitized, forKey: defaultsKey)
         }
         self.userDefaults = userDefaults
+        self.hotKeyManager = hotKeyManager
         self.settings = loaded
         self.plainTextPaste = loaded.plainTextPaste
+        self.screenshotHotKeyEnabled = loaded.screenshotHotKeyEnabled
+        self.screenshotHotKey = loaded.screenshotHotKey
         self.store = try ClipboardStore(rootURL: root, settings: loaded)
+        let systemPasteboard = SystemPasteboard()
+        self.systemPasteboard = systemPasteboard
+        self.screenshotCapture = ScreenshotCapture(
+            store: self.store,
+            pasteboard: systemPasteboard,
+            selfWriteGuard: self.selfWriteGuard,
+            system: MacOSScreenshotSystem()
+        )
+        self.screenCaptureAuthorized = self.screenshotCapture.hasScreenCaptureAccess
         setupPasteService()
         // Defer history load off init so app chrome appears immediately.
         // `start()` / panel onAppear call `refreshAsync()`.
@@ -156,6 +181,8 @@ public final class AppModel: ObservableObject {
     public func stop() {
         monitor?.stop()
         isMonitoring = false
+        isRecordingScreenshotHotKey = false
+        hotKeyManager.deactivateAll()
     }
 
     /// Synchronous history reload (explicit refresh / tests). Does not re-probe Accessibility —
@@ -316,6 +343,108 @@ public final class AppModel: ObservableObject {
         accessibilityTrusted = AccessibilityPaste.isTrusted(prompt: false)
     }
 
+    public func refreshScreenCapturePermission() {
+        screenCaptureAuthorized = screenshotCapture.hasScreenCaptureAccess
+    }
+
+    public func openScreenCaptureSettings() {
+        screenshotCapture.openSystemSettings()
+        refreshScreenCapturePermission()
+    }
+
+    public func configureGlobalHotKeys(
+        onHistoryPanel: @escaping () -> Void,
+        onRegionScreenshot: @escaping () -> Void
+    ) {
+        hotKeyManager.setHandler(for: .historyPanel, handler: onHistoryPanel)
+        hotKeyManager.setHandler(for: .regionScreenshot, handler: onRegionScreenshot)
+
+        restoreConfiguredGlobalHotKeys()
+    }
+
+    /// Releases both application hotkeys while the settings recorder owns keyboard input.
+    /// Otherwise Carbon can consume the current shortcut before the recorder sees it.
+    public func beginScreenshotHotKeyRecording() {
+        guard !isRecordingScreenshotHotKey else { return }
+        isRecordingScreenshotHotKey = true
+        hotKeyManager.deactivate(.historyPanel)
+        hotKeyManager.deactivate(.regionScreenshot)
+    }
+
+    @discardableResult
+    public func finishScreenshotHotKeyRecording(
+        shortcut: HotKeyShortcut
+    ) -> Result<Void, HotKeyRegistrationError> {
+        guard isRecordingScreenshotHotKey else {
+            return updateScreenshotHotKey(
+                enabled: screenshotHotKeyEnabled,
+                shortcut: shortcut
+            )
+        }
+        isRecordingScreenshotHotKey = false
+        // Restore the prior live bindings first. `updateScreenshotHotKey` then replaces
+        // the screenshot candidate transactionally, preserving the old shortcut on failure.
+        restoreConfiguredGlobalHotKeys()
+        return updateScreenshotHotKey(
+            enabled: screenshotHotKeyEnabled,
+            shortcut: shortcut
+        )
+    }
+
+    public func cancelScreenshotHotKeyRecording() {
+        guard isRecordingScreenshotHotKey else { return }
+        isRecordingScreenshotHotKey = false
+        restoreConfiguredGlobalHotKeys()
+    }
+
+    private func restoreConfiguredGlobalHotKeys() {
+        if case .failure(let error) = hotKeyManager.activate(
+            .historyPanel,
+            shortcut: .historyDefault
+        ) {
+            statusMessage = "快捷键 \(HotKeyShortcut.historyDefault.displayLabel) 注册失败：\(error.localizedDescription)"
+        }
+
+        guard settings.screenshotHotKeyEnabled else {
+            hotKeyManager.deactivate(.regionScreenshot)
+            screenshotHotKeyError = nil
+            return
+        }
+        if case .failure(let error) = hotKeyManager.activate(
+            .regionScreenshot,
+            shortcut: settings.screenshotHotKey
+        ) {
+            screenshotHotKeyError = error.localizedDescription
+        } else {
+            screenshotHotKeyError = nil
+        }
+    }
+
+    @discardableResult
+    public func captureRegionScreenshot() async -> ScreenshotCaptureOutcome {
+        guard !isCapturingScreenshot else { return .ignoredAlreadyCapturing }
+        isCapturingScreenshot = true
+        defer { isCapturingScreenshot = false }
+
+        let outcome = await screenshotCapture.captureRegion()
+        screenCaptureAuthorized = screenshotCapture.hasScreenCaptureAccess
+        switch outcome {
+        case .captured(history: .inserted), .captured(history: .deduplicated):
+            statusMessage = nil
+            refreshAsync()
+        case .captured(history: .failed(let message)):
+            statusMessage = "截图已复制，但写入历史失败：\(message)"
+            refreshAsync()
+        case .cancelled, .ignoredAlreadyCapturing:
+            break
+        case .permissionDenied:
+            statusMessage = "快速截屏需要屏幕录制权限"
+        case .failed(let failure):
+            statusMessage = failure.localizedDescription
+        }
+        return outcome
+    }
+
     public func requestAccessibility() {
         // Only open System Settings — do not call isTrusted(prompt: true), which shows a
         // redundant system AX dialog on top of Settings (and its close button is awkward).
@@ -419,6 +548,36 @@ public final class AppModel: ObservableObject {
             userDefaults.set(data, forKey: defaultsKey)
         }
         store.updateSettings(settings)
+    }
+
+    @discardableResult
+    public func updateScreenshotHotKey(
+        enabled: Bool,
+        shortcut: HotKeyShortcut
+    ) -> Result<Void, HotKeyRegistrationError> {
+        if let validationError = shortcut.validationError {
+            let error = HotKeyRegistrationError.invalidShortcut(validationError)
+            screenshotHotKeyError = error.localizedDescription
+            return .failure(error)
+        }
+
+        if enabled {
+            let result = hotKeyManager.activate(.regionScreenshot, shortcut: shortcut)
+            if case .failure(let error) = result {
+                screenshotHotKeyError = error.localizedDescription
+                return .failure(error)
+            }
+        } else {
+            hotKeyManager.deactivate(.regionScreenshot)
+        }
+
+        settings.screenshotHotKeyEnabled = enabled
+        settings.screenshotHotKey = shortcut
+        screenshotHotKeyEnabled = enabled
+        screenshotHotKey = shortcut
+        screenshotHotKeyError = nil
+        persistSettings()
+        return .success(())
     }
 
     public func updateRetention(maxItems: Int, maxAgeDays: Int) async -> Bool {
@@ -557,7 +716,6 @@ public final class AppModel: ObservableObject {
                 self.updateCheckMessage = "下载完成，即将退出并安装新版本…"
                 self.statusMessage = "正在安装更新…"
                 try? await Task.sleep(nanoseconds: 600_000_000)
-                GlobalHotKey.shared.unregister()
                 self.stop()
                 NSApp.terminate(nil)
             } catch {
@@ -575,6 +733,8 @@ private struct CodableSettings: Codable {
     var maxAgeDays: Int
     var plainTextPaste: Bool
     var launchAtLogin: Bool
+    var screenshotHotKeyEnabled: Bool?
+    var screenshotHotKey: HotKeyShortcut?
 
     var settings: AppSettings {
         AppSettings(
@@ -582,7 +742,9 @@ private struct CodableSettings: Codable {
             maxItems: maxItems,
             maxAgeDays: maxAgeDays,
             plainTextPaste: plainTextPaste,
-            launchAtLogin: launchAtLogin
+            launchAtLogin: launchAtLogin,
+            screenshotHotKeyEnabled: screenshotHotKeyEnabled ?? true,
+            screenshotHotKey: screenshotHotKey ?? .screenshotDefault
         )
     }
 
@@ -592,5 +754,7 @@ private struct CodableSettings: Codable {
         maxAgeDays = settings.maxAgeDays
         plainTextPaste = settings.plainTextPaste
         launchAtLogin = settings.launchAtLogin
+        screenshotHotKeyEnabled = settings.screenshotHotKeyEnabled
+        screenshotHotKey = settings.screenshotHotKey
     }
 }
