@@ -132,6 +132,18 @@ if [[ "${CURRENT}" != "${VERSION}" ]]; then
   git commit -m "chore: bump version to ${VERSION}"
 fi
 
+# `make public` must not leave a stale local `dist/` tree behind. Build the
+# exact version being tagged, but do not install another LocalClip copy.
+echo "==> Building local ${VERSION} release artifacts before publishing"
+SKIP_LOCAL_INSTALL=1 "$ROOT/Scripts/release.sh"
+
+BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  "$ROOT/dist/LocalClip.app/Contents/Info.plist" 2>/dev/null || true)"
+if [[ "$BUILT_VERSION" != "$VERSION" ]]; then
+  echo "error: local release version mismatch (expected ${VERSION}, got ${BUILT_VERSION:-missing})" >&2
+  exit 1
+fi
+
 if git rev-parse "${TAG}" >/dev/null 2>&1; then
   echo "error: tag ${TAG} already exists locally" >&2
   exit 1
@@ -154,6 +166,7 @@ REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 echo ""
 echo "=========================================="
 echo "  Tag ${TAG} pushed."
+echo "  Local artifacts: ${ROOT}/dist/LocalClip-${VERSION}-universal-macos.{zip,dmg}"
 echo "  CI builds universal ZIP/DMG and attaches to the Release."
 echo "  Watch:  gh run list --workflow=release.yml"
 echo "  Actions: https://github.com/${REPO}/actions"

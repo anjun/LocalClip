@@ -25,6 +25,8 @@ For auto-paste, enable LocalClip under **System Settings → Privacy & Security 
 
 The first quick capture requests **Screen & System Audio Recording** access only when needed. After granting it, return to LocalClip and press the shortcut again. LocalClip uses a temporary PNG and deletes it immediately after writing the pasteboard and local history.
 
+Keep only one `LocalClip.app` copy. Source builds and current releases without Developer ID use ad-hoc signing, so macOS may require permission again after a rebuild or update. If the system toggle is on while LocalClip still says “not ready,” close duplicate copies, toggle LocalClip off and on in System Settings, then quit and relaunch the app completely.
+
 Requires macOS 13+ (universal arm64 + x86_64 builds).
 
 ## Usage
@@ -54,10 +56,10 @@ After pressing **⌥A**, drag to select a region; Escape cancels silently. A suc
 git clone https://github.com/anjun/LocalClip.git
 cd LocalClip
 make test
-make package   # → ~/Applications/LocalClip.app
+make package   # → updates the existing install location (or a writable Applications folder)
 ```
 
-Universal release bundle: `make release`. Pushing a `v*` tag can publish via GitHub Actions.
+Universal release bundle: `make release`. `make public` refreshes local `dist/` first, then pushes a `v*` tag for GitHub Actions to publish.
 
 ## License
 

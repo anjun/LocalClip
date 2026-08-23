@@ -112,22 +112,22 @@ public enum UpdateChecker {
         return (best.name, best.url)
     }
 
-    /// Prefer stable ~/Applications path for updates (TCC identity); fall back to running .app.
+    /// Replace the exact app bundle that is currently running.
+    ///
+    /// Choosing another copy by path creates two apps with the same bundle identifier.
+    /// With ad-hoc builds their code requirements differ, so macOS can show a granted
+    /// privacy toggle for one copy while denying the other.
     public static func installDestination(
         bundle: Bundle = .main,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        let apps = home
-            .appendingPathComponent("Applications", isDirectory: true)
-            .appendingPathComponent("LocalClip.app", isDirectory: true)
-        if FileManager.default.fileExists(atPath: apps.path) {
-            return apps
-        }
         let running = bundle.bundleURL
-        if running.pathExtension == "app" {
+        if running.pathExtension == "app", running.lastPathComponent == "LocalClip.app" {
             return running
         }
-        return apps
+        return home
+            .appendingPathComponent("Applications", isDirectory: true)
+            .appendingPathComponent("LocalClip.app", isDirectory: true)
     }
 
     /// Fetch latest GitHub release and compare to `currentVersion`.
@@ -264,10 +264,8 @@ public enum UpdateChecker {
         fi
         /usr/bin/ditto "$SRC" "$DEST"
         /usr/bin/xattr -cr "$DEST" 2>/dev/null || true
-        if command -v codesign >/dev/null; then
-          /usr/bin/codesign --force --sign - --identifier "com.localclip.app" "$DEST/Contents/MacOS/LocalClip" 2>/dev/null || true
-          /usr/bin/codesign --force --sign - --identifier "com.localclip.app" "$DEST" 2>/dev/null || true
-        fi
+        # Preserve the signature shipped in the release. Re-signing locally changes
+        # the app identity used by TCC and would also destroy a future Developer ID signature.
         # Relaunch: -n forces a new instance; -a path works for .app bundles
         /usr/bin/open -n -a "$DEST" || /usr/bin/open "$DEST"
         sleep 0.5

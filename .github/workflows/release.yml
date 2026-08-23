@@ -83,7 +83,8 @@ jobs:
           1. Download the \`.dmg\` or \`.zip\`
           2. Open / drag **LocalClip.app** to Applications
           3. System Settings → Privacy & Security → **Accessibility** → enable LocalClip
-          4. Global hotkey: **⌥C**
+          4. Quick capture requests **Screen & System Audio Recording** on first use
+          5. Hotkeys: **⌥C** history, **⌥A** region capture
 
           ### Checksums
           EOF

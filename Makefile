@@ -2,7 +2,7 @@
 #
 # make release  → universal .app (arm64 + x86_64) + ZIP + DMG
 # make package  → host-arch .app only (faster, for dev)
-# make public   → tag + push (GitHub Actions builds release assets)
+# make public   → local universal package + tag + push (CI publishes assets)
 # make test     → unit runner
 # make clean    → remove build/dist intermediates
 #
@@ -17,10 +17,10 @@ help:
 	@echo "LocalClip targets:"
 	@echo "  make release         - universal Intel+Apple silicon package (ZIP + DMG)"
 	@echo "  make package         - single-arch .app for this machine (dev)"
-	@echo "  make public          - auto patch bump (e.g. 1.0.0 → 1.0.1) + tag + push"
+	@echo "  make public          - auto patch bump + local package + tag + push"
 	@echo "  make public VERSION=1.2.0  - explicit version + tag + push"
 	@echo "  make test            - run LocalClipTestRunner"
-	@echo "  make install         - alias of package (installs to ~/Applications)"
+	@echo "  make install         - alias of package (updates the existing app location)"
 	@echo "  make open            - open installed app"
 	@echo "  make clean           - remove .build and dist intermediates"
 
@@ -37,10 +37,11 @@ public:
 	@export VERSION="$(VERSION)"; "$(ROOT)/Scripts/public-release.sh"
 
 test:
-	@swift run -c release LocalClipTestRunner
+	@source "$(ROOT)/Scripts/swift-env.sh"; localclip_configure_swift_env "$(ROOT)"; swift run -c release LocalClipTestRunner
+	@bash "$(ROOT)/Scripts/tests/test-public-release.sh"
 
 open:
-	@open "$(HOME)/Applications/LocalClip.app"
+	@source "$(ROOT)/Scripts/install-path.sh"; open "$$(localclip_install_app)"
 
 clean:
 	@rm -rf "$(ROOT)/.build" "$(ROOT)/dist/universal-build"

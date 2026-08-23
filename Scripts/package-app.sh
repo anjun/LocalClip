@@ -3,11 +3,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+source "$ROOT/Scripts/install-path.sh"
+source "$ROOT/Scripts/swift-env.sh"
+localclip_configure_swift_env "$ROOT"
+
 swift build -c release --product LocalClip
 BIN="$(swift build -c release --show-bin-path)/LocalClip"
 
-# Prefer stable user Applications path so TCC/Accessibility identity stays consistent.
-INSTALL_DIR="${HOME}/Applications"
+# Reuse the existing install location so one bundle ID never fans out into two
+# independently signed apps.
+INSTALL_DIR="$(localclip_install_dir)"
+localclip_warn_duplicate_install
 mkdir -p "$INSTALL_DIR" "$ROOT/dist"
 APP_DIST="$ROOT/dist/LocalClip.app"
 APP_INSTALL="$INSTALL_DIR/LocalClip.app"
@@ -38,7 +44,8 @@ package_into() {
 }
 
 package_into "$APP_DIST"
-package_into "$APP_INSTALL"
+rm -rf "$APP_INSTALL"
+/usr/bin/ditto "$APP_DIST" "$APP_INSTALL"
 
 echo "Built: $APP_DIST"
 echo "Installed: $APP_INSTALL"

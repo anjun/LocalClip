@@ -5,6 +5,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+source "$ROOT/Scripts/install-path.sh"
+source "$ROOT/Scripts/swift-env.sh"
+localclip_configure_swift_env "$ROOT"
+
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist 2>/dev/null || echo "1.0.0")"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist 2>/dev/null || echo "1")"
 PRODUCT_NAME="LocalClip"
@@ -14,15 +18,34 @@ MIN_MACOS="13.0"
 DIST="$ROOT/dist"
 APP="$DIST/${PRODUCT_NAME}.app"
 STAGE="$DIST/universal-build"
+ARCHIVE_DIR="$DIST/archive"
 ZIP_NAME="${PRODUCT_NAME}-${VERSION}-universal-macos.zip"
 DMG_NAME="${PRODUCT_NAME}-${VERSION}-universal-macos.dmg"
-INSTALL_DIR="${HOME}/Applications"
+INSTALL_DIR="$(localclip_install_dir)"
 
 echo "==> LocalClip release ${VERSION} (build ${BUILD})"
 echo "    Target: universal macOS (arm64 + x86_64), minimum ${MIN_MACOS}"
 
 rm -rf "$STAGE" "$APP"
-mkdir -p "$STAGE" "$DIST" "$INSTALL_DIR"
+mkdir -p "$STAGE" "$DIST" "$ARCHIVE_DIR"
+
+# Keep the top-level dist directory unambiguous: older release bundles remain
+# recoverable under dist/archive instead of sitting beside the current version.
+for old_artifact in \
+  "$DIST"/LocalClip-*-universal-macos.zip \
+  "$DIST"/LocalClip-*-universal-macos.dmg
+do
+  [[ -f "$old_artifact" ]] || continue
+  old_name="$(basename "$old_artifact")"
+  if [[ "$old_name" == "$ZIP_NAME" || "$old_name" == "$DMG_NAME" ]]; then
+    continue
+  fi
+  if [[ -e "$ARCHIVE_DIR/$old_name" ]]; then
+    echo "warning: cannot archive duplicate artifact: $old_artifact" >&2
+    continue
+  fi
+  mv "$old_artifact" "$ARCHIVE_DIR/$old_name"
+done
 
 build_arch() {
   local arch="$1"
@@ -93,24 +116,24 @@ chmod +x "$APP/Contents/MacOS/LocalClip"
 # Strip quarantine from build tree pieces we control
 xattr -cr "$APP" 2>/dev/null || true
 
-echo "==> Ad-hoc codesign (stable id, no hardened runtime)…"
+echo "==> Ad-hoc codesign for local/GitHub build…"
 if command -v codesign >/dev/null; then
   codesign --force --sign - --identifier "$BUNDLE_ID" "$APP/Contents/MacOS/LocalClip"
   codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
   codesign --verify --verbose=1 "$APP" 2>&1 || true
 fi
+echo "warning: ad-hoc signatures change identity on rebuild; stable TCC permissions require Apple Development or Developer ID signing." >&2
 
 # Install for local use (stable TCC identity path). Skip in CI via SKIP_LOCAL_INSTALL=1.
 if [[ "${SKIP_LOCAL_INSTALL:-0}" != "1" ]]; then
+  localclip_warn_duplicate_install
+  mkdir -p "$INSTALL_DIR"
   echo "==> Installing to ${INSTALL_DIR}/${PRODUCT_NAME}.app…"
   rm -rf "${INSTALL_DIR}/${PRODUCT_NAME}.app"
-  cp -R "$APP" "${INSTALL_DIR}/${PRODUCT_NAME}.app"
+  /usr/bin/ditto "$APP" "${INSTALL_DIR}/${PRODUCT_NAME}.app"
   xattr -cr "${INSTALL_DIR}/${PRODUCT_NAME}.app" 2>/dev/null || true
-  if command -v codesign >/dev/null; then
-    codesign --force --sign - --identifier "$BUNDLE_ID" "${INSTALL_DIR}/${PRODUCT_NAME}.app" 2>/dev/null || true
-  fi
 else
-  echo "==> SKIP_LOCAL_INSTALL=1 — not copying to ~/Applications"
+  echo "==> SKIP_LOCAL_INSTALL=1 — not installing a local app copy"
 fi
 
 echo "==> ZIP package…"

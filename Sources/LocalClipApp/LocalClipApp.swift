@@ -643,7 +643,7 @@ struct SettingsView: View {
                             Text(
                                 model.screenCaptureAuthorized
                                     ? "屏幕录制：已就绪"
-                                    : "屏幕录制：首次截屏时请求"
+                                    : "屏幕录制：未就绪（首次截屏时请求）"
                             )
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(LCTheme.textPrimary)

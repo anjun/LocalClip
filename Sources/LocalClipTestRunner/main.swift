@@ -1153,15 +1153,47 @@ struct LocalClipTestRunner {
         expect(pick?.name == "LocalClip-1.0.1-universal-macos.zip", "prefer universal zip asset")
         expect(pick?.url.absoluteString == "https://example.com/a.zip", "zip download url")
 
-        let dest = UpdateChecker.installDestination(
-            bundle: Bundle(path: "/tmp/not-an-app") ?? .main,
-            home: URL(fileURLWithPath: "/Users/demo")
+        let destinationWork = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LC-update-destination-\(UUID().uuidString)", isDirectory: true)
+        let runningApp = destinationWork
+            .appendingPathComponent("system/Applications/LocalClip.app", isDirectory: true)
+        let runningContents = runningApp.appendingPathComponent("Contents", isDirectory: true)
+        let competingHomeApp = destinationWork
+            .appendingPathComponent("home/Applications/LocalClip.app", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: runningContents,
+            withIntermediateDirectories: true
         )
-        expect(
-            dest.path.hasSuffix("Applications/LocalClip.app")
-                || dest.path.contains("LocalClip.app"),
-            "install destination is LocalClip.app"
+        try? FileManager.default.createDirectory(
+            at: competingHomeApp,
+            withIntermediateDirectories: true
         )
+        let bundleInfo: [String: Any] = [
+            "CFBundleIdentifier": "com.localclip.app",
+            "CFBundleName": "LocalClip",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": "9.9.9"
+        ]
+        if let infoData = try? PropertyListSerialization.data(
+            fromPropertyList: bundleInfo,
+            format: .xml,
+            options: 0
+        ) {
+            try? infoData.write(to: runningContents.appendingPathComponent("Info.plist"))
+        }
+        if let runningBundle = Bundle(url: runningApp) {
+            let destination = UpdateChecker.installDestination(
+                bundle: runningBundle,
+                home: destinationWork.appendingPathComponent("home", isDirectory: true)
+            )
+            expect(
+                destination.standardizedFileURL == runningApp.standardizedFileURL,
+                "updates replace the running app instead of a competing duplicate"
+            )
+        } else {
+            expect(false, "update destination test creates a runnable app bundle")
+        }
+        try? FileManager.default.removeItem(at: destinationWork)
 
         let work = FileManager.default.temporaryDirectory
             .appendingPathComponent("LC-findapp-\(UUID().uuidString)", isDirectory: true)

@@ -25,6 +25,8 @@
 
 首次使用快速截屏时，macOS 会按需请求 **屏幕与系统音频录制** 权限；授权后返回 LocalClip，再按一次快捷键即可。截屏只使用临时 PNG，写入剪贴板与本机历史后立即删除临时文件。
 
+请只保留一份 `LocalClip.app`。源码构建和当前未使用 Developer ID 的发布包采用 ad-hoc 签名；App 重建或更新后，macOS 可能要求重新授权。若系统开关已打开但 LocalClip 仍显示“未就绪”，请关闭重复副本，在系统设置中将 LocalClip 关闭再打开，然后完全退出并重新启动 App。
+
 要求：macOS 13+（发布包为 Apple 芯片 / Intel 通用二进制）。
 
 ## 使用
@@ -54,10 +56,10 @@
 git clone https://github.com/anjun/LocalClip.git
 cd LocalClip
 make test
-make package   # → ~/Applications/LocalClip.app
+make package   # → 更新现有安装位置；没有旧版时选择可写的 Applications
 ```
 
-通用发布包：`make release`。推送 `v*` 标签可由 GitHub Actions 自动构建 Release。
+通用发布包：`make release`。`make public` 会先刷新本地 `dist/`，再推送 `v*` 标签并由 GitHub Actions 发布 Release。
 
 ## 许可证
 
