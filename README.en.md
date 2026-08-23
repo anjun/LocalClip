@@ -23,11 +23,26 @@ Download a `.dmg` or `.zip` from [Releases](https://github.com/anjun/LocalClip/r
 
 For auto-paste, enable LocalClip under **System Settings → Privacy & Security → Accessibility**. After changing permissions, right-click the status item → **Quit and reopen**.
 
-The first quick capture requests **Screen & System Audio Recording** access only when needed. After granting it, return to LocalClip and press the shortcut again. LocalClip uses a temporary PNG and deletes it immediately after writing the pasteboard and local history.
-
-Keep only one `LocalClip.app` copy. Source builds and current releases without Developer ID use ad-hoc signing, so macOS may require permission again after a rebuild or update. If the system toggle is on while LocalClip still says “not ready,” close duplicate copies, toggle LocalClip off and on in System Settings, then quit and relaunch the app completely.
+Quick capture needs **Screen & System Audio Recording** access; see the next section. Keep only one `LocalClip.app` copy.
 
 Requires macOS 13+ (universal arm64 + x86_64 builds).
+
+## Quick capture
+
+Press **⌥A** (customizable) for the native macOS region selector: drag to select, Escape to cancel. A successful PNG is copied to the system pasteboard and stored as a normal image in LocalClip history. There is no preview window and nothing is saved to the Desktop. Capture uses a temporary file that is deleted as soon as the pasteboard and history are written.
+
+You can also right-click the status item → **Region capture**. In **Preferences → Quick capture**, disable the global shortcut (the menu item still works), record a new combination, or restore the default **⌥A**.
+
+The first capture requests **Screen & System Audio Recording** if LocalClip cannot yet see other apps’ windows. After you allow it, **quit LocalClip completely and reopen**, then press the shortcut again. Without this grant, the selection UI may still appear, but the result is often only the desktop wallpaper, followed by another permission prompt.
+
+If the system toggle looks on but the shot is the desktop and windows such as WeChat are missing:
+
+1. Keep only one LocalClip copy
+2. System Settings → Privacy & Security → Screen & System Audio Recording
+3. Remove every LocalClip entry, add the current `LocalClip.app`, and enable it
+4. Quit LocalClip fully, reopen it, focus the target window, and press the shortcut
+
+Source builds and current releases use ad-hoc signing. If an update drops the grant, repeat the steps above once.
 
 ## Usage
 
@@ -40,7 +55,7 @@ Requires macOS 13+ (universal arm64 + x86_64 builds).
 | Click a row | Write pasteboard + try auto-paste |
 | Right-click status item | Region capture, preferences, updates, quit |
 
-After pressing **⌥A**, drag to select a region; Escape cancels silently. A successful PNG goes to the system pasteboard and normal image history without a preview or Desktop file. Search text in the panel; optional plain-text paste (text only). Preferences lets you record, restore, or disable the capture shortcut and set the item-count limit and retention duration independently; the default remains **200 items / 7 days**. Choosing a permanent duration disables age-based cleanup, while the item-count limit continues to apply.
+Search text in the panel; optional plain-text paste (text only). Preferences lets you set the item-count limit and retention duration independently; the default remains **200 items / 7 days**. Choosing a permanent duration disables age-based cleanup, while the item-count limit continues to apply.
 
 ## Privacy
 
