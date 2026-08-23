@@ -676,6 +676,7 @@ struct SettingsView: View {
                                 }
                             }
                             .pickerStyle(.menu)
+                            .labelsHidden()
                             .id("retention-items-\(retentionMaxItems)-\(retentionPickerEpoch)")
                             .disabled(isRetentionControlsDisabled)
                         }
@@ -692,6 +693,7 @@ struct SettingsView: View {
                                 }
                             }
                             .pickerStyle(.menu)
+                            .labelsHidden()
                             .id("retention-age-\(retentionMaxAgeDays)-\(retentionPickerEpoch)")
                             .disabled(isRetentionControlsDisabled)
                         }

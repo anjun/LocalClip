@@ -400,6 +400,34 @@ struct LocalClipTestRunner {
             expect(try store.allItems().count == 2, "flushing scheduled prune enforces maxItems")
         }
 
+        withStore { store, clock, _ in
+            store.updateSettings(AppSettings(maxItems: 1, maxAgeDays: 0))
+            var notifications = 0
+            store.onPruneCompleted = { notifications += 1 }
+            store.pruneExecutor = { work in work() }
+
+            _ = try store.insertText("keep-one")
+            expect(notifications == 0, "schedulePrune skips UI notify when nothing is removed")
+
+            clock.date = clock.date.addingTimeInterval(1)
+            _ = try store.insertText("keep-two")
+            expect(notifications == 1, "schedulePrune notifies after removing overflow rows")
+            expect(try store.allItems().map(\.textContent) == ["keep-two"], "overflow prune keeps the newest row")
+        }
+
+        withStore { store, clock, _ in
+            store.updateSettings(AppSettings(maxItems: 200, maxAgeDays: 7))
+            var notifications = 0
+            store.onPruneCompleted = { notifications += 1 }
+            store.pruneExecutor = { work in work() }
+
+            _ = try store.insertText("stale")
+            clock.date = clock.date.addingTimeInterval(8 * 24 * 60 * 60)
+            _ = try store.insertText("fresh")
+            expect(notifications == 1, "schedulePrune notifies after age pruning")
+            expect(try store.allItems().map(\.textContent) == ["fresh"], "age prune keeps the fresh row")
+        }
+
         withStore { store, _, root in
             let item = try store.insertImage(data: tinyPNG())!
             let imageURL = root.appendingPathComponent(item.imagePath!)

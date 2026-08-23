@@ -33,6 +33,9 @@ public final class ClipboardStore: @unchecked Sendable {
     /// Tests replace with a holder that does not run until flushed, proving insert
     /// does not wait on prune.
     public var pruneExecutor: (@escaping () -> Void) -> Void = { _ in }
+    /// Fired on the prune executor after a prune that actually deleted rows.
+    /// Ingest notifies the UI before prune runs, so the panel would otherwise keep stale items.
+    public var onPruneCompleted: (() -> Void)?
 
     public init(rootURL: URL, settings: AppSettings = .default, clock: Clock = SystemClock()) throws {
         self.rootURL = rootURL
@@ -161,7 +164,10 @@ public final class ClipboardStore: @unchecked Sendable {
         pruneExecutor { [weak self] in
             guard let self else { return }
             do {
-                try self.prune()
+                let removed = try self.prune()
+                if removed {
+                    self.onPruneCompleted?()
+                }
             } catch {
                 NSLog("LocalClip prune error: \(error)")
             }
@@ -358,13 +364,15 @@ public final class ClipboardStore: @unchecked Sendable {
 
     // MARK: - Prune
 
-    public func prune() throws {
+    @discardableResult
+    public func prune() throws -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        try pruneLocked()
+        return try pruneLocked()
     }
 
-    private func pruneLocked() throws {
+    @discardableResult
+    private func pruneLocked() throws -> Bool {
         var candidates: [ClipboardItem] = []
         var candidateIDs = Set<String>()
 
@@ -392,10 +400,12 @@ public final class ClipboardStore: @unchecked Sendable {
             }
         }
 
-        if !candidates.isEmpty {
+        let removed = !candidates.isEmpty
+        if removed {
             try deleteItemsInTransactionLocked(candidates)
         }
         retryPendingAssetCleanupLocked()
+        return removed
     }
 
     /// Rows older than the retention cutoff (newest first).

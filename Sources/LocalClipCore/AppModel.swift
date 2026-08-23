@@ -66,6 +66,9 @@ public final class AppModel: ObservableObject {
     /// When true, the next `reconcileSelection()` forces the first list item.
     /// Set on panel open so an in-flight `refreshAsync()` still lands on top.
     private var selectTopOnNextReconcile = false
+    /// Idle sweep so 7-day expiry still runs while the menu-bar app sits without copies.
+    private var retentionSweepTimer: Timer?
+    public var retentionSweepInterval: TimeInterval = 60 * 60
 
     public init(
         storeRoot: URL? = nil,
@@ -125,6 +128,11 @@ public final class AppModel: ObservableObject {
         setupPasteService()
         // Defer history load off init so app chrome appears immediately.
         // `start()` / panel onAppear call `refreshAsync()`.
+        self.store.onPruneCompleted = { [weak self] in
+            Task { @MainActor in
+                self?.refreshAsync()
+            }
+        }
     }
 
     private func setupPasteService() {
@@ -172,6 +180,8 @@ public final class AppModel: ObservableObject {
         Task.detached(priority: .utility) {
             storeRef.repairBloatedThumbnails()
         }
+        store.schedulePrune()
+        startRetentionSweepTimer()
 
         if settings.launchAtLogin {
             registerLoginItem(enabled: true)
@@ -179,6 +189,8 @@ public final class AppModel: ObservableObject {
     }
 
     public func stop() {
+        retentionSweepTimer?.invalidate()
+        retentionSweepTimer = nil
         monitor?.stop()
         isMonitoring = false
         isRecordingScreenshotHotKey = false
@@ -309,6 +321,7 @@ public final class AppModel: ObservableObject {
         searchQuery = ""
         // Cancel any pending debounced search and load immediately (do not wait 160ms).
         cancelPendingSearchLoad()
+        store.schedulePrune()
         startLoadItems(for: "")
         resetSelectionToTop()
         searchFocusNonce += 1
@@ -337,6 +350,21 @@ public final class AppModel: ObservableObject {
     public func pasteItem(at index: Int) {
         guard index >= 0, index < items.count else { return }
         pasteItem(items[index])
+    }
+
+    private func startRetentionSweepTimer() {
+        retentionSweepTimer?.invalidate()
+        retentionSweepTimer = nil
+        guard retentionSweepInterval > 0 else { return }
+        let interval = retentionSweepInterval
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.store.schedulePrune()
+            }
+        }
+        timer.tolerance = min(300, interval / 4)
+        RunLoop.main.add(timer, forMode: .common)
+        retentionSweepTimer = timer
     }
 
     public func refreshAccessibility() {
@@ -610,7 +638,7 @@ public final class AppModel: ObservableObject {
         let store = self.store
         do {
             try await Task.detached(priority: .utility) {
-                try store.prune()
+                _ = try store.prune()
             }.value
             refresh()
             return true
