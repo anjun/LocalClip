@@ -2,20 +2,83 @@ import SwiftUI
 import LocalClipCore
 import AppKit
 
+/// AppKit process entry. A SwiftUI `App` + dummy `WindowGroup` crashes on macOS 26:
+/// the 1×N bootstrap window exceeds AppKit's constraint-pass limit
+/// (`NSGenericException` in `_postWindowNeedsUpdateConstraints`).
+@main
+enum LocalClipMain {
+    @MainActor
+    static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        AppDelegate.shared.installModelIfNeeded()
+        app.delegate = AppDelegate.shared
+        app.run()
+    }
+}
+
 /// Starts clipboard monitoring at process launch; owns AppKit status item.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static let shared = AppDelegate()
     static var sharedModel: AppModel?
     static var statusBar: StatusBarController?
 
+    private override init() {
+        super.init()
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        MainActor.assumeIsolated {
+            self.finishLaunching()
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            AppDelegate.sharedModel?.refreshAccessibility()
+            AppDelegate.sharedModel?.refreshScreenCapturePermission()
+        }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Delegate callbacks run on the main thread; stop must finish before exit.
+        MainActor.assumeIsolated {
+            AppDelegate.sharedModel?.stop()
+        }
+    }
+
+    @MainActor
+    func installModelIfNeeded() {
+        guard AppDelegate.sharedModel == nil else { return }
+        let created: AppModel
+        do {
+            created = try AppModel()
+        } catch {
+            // Don't crash the process with fatalError — surface a running accessory
+            // that can still quit cleanly (store open almost never fails).
+            NSLog("LocalClip failed to open store: \(error)")
+            created = try! AppModel(storeRoot: FileManager.default.temporaryDirectory
+                .appendingPathComponent("LocalClip-fallback", isDirectory: true))
+        }
+        AppDelegate.sharedModel = created
+    }
+
+    @MainActor
+    private func finishLaunching() {
         // Apply bundle icon (shows in Accessibility, Force Quit, etc.)
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: url) {
             NSApp.applicationIconImage = icon
         }
-        // Hide the SwiftUI bootstrap window (required Scene; all real UI is AppKit).
-        Self.hideBootstrapWindows()
         guard let model = AppDelegate.sharedModel else { return }
         model.start()
         if AppDelegate.statusBar == nil {
@@ -24,78 +87,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppDelegate.statusBar = bar
         }
         model.refreshAccessibility()
-        // One more pass after SwiftUI creates its Scene window.
-        DispatchQueue.main.async {
-            Self.hideBootstrapWindows()
-        }
-    }
-
-    func applicationDidBecomeActive(_ notification: Notification) {
-        AppDelegate.sharedModel?.refreshAccessibility()
-        AppDelegate.sharedModel?.refreshScreenCapturePermission()
-        // Never let the bootstrap / stray Settings-style window reappear on activate.
-        Self.hideBootstrapWindows()
-    }
-
-    /// Order out the dummy WindowGroup used only for SwiftUI lifecycle.
-    static func hideBootstrapWindows() {
-        for window in NSApp.windows {
-            let id = window.identifier?.rawValue ?? ""
-            if id == "localclip-bootstrap"
-                || window.title == "LocalClip Bootstrap"
-                || (window.contentView?.subviews.isEmpty == true && window.frame.width <= 2) {
-                window.alphaValue = 0
-                window.collectionBehavior.insert([.transient, .ignoresCycle, .stationary])
-                window.orderOut(nil)
-            }
-        }
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        AppDelegate.sharedModel?.stop()
-    }
-}
-
-@main
-struct LocalClipApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model: AppModel
-
-    init() {
-        NSApplication.shared.setActivationPolicy(.accessory)
-        let created: AppModel
-        do {
-            created = try AppModel()
-        } catch {
-            // Don't crash the process with fatalError — surface a running accessory
-            // that can still quit cleanly (store open almost never fails).
-            NSLog("LocalClip failed to open store: \(error)")
-            // Last-resort: temp store so UI can still load
-            created = try! AppModel(storeRoot: FileManager.default.temporaryDirectory
-                .appendingPathComponent("LocalClip-fallback", isDirectory: true))
-        }
-        _model = StateObject(wrappedValue: created)
-        AppDelegate.sharedModel = created
-        // Start monitor in applicationDidFinishLaunching / StatusBarController.install —
-        // not here — so AppKit is fully up before timers / pasteboard access.
-    }
-
-    var body: some Scene {
-        // Dummy scene only — real UI is AppKit (status item / popover / prefs window).
-        // Do NOT use Settings { }: it opens on Cmd+, and can reappear when the app
-        // becomes active (looked like “right-click menu opened preferences”).
-        WindowGroup(id: "localclip-bootstrap") {
-            Color.clear
-                .frame(width: 1, height: 1)
-                .accessibilityHidden(true)
-                .onAppear {
-                    AppDelegate.hideBootstrapWindows()
-                }
-        }
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
-        .defaultSize(width: 1, height: 1)
-        .commandsRemoved()
     }
 }
 

@@ -54,6 +54,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 .environmentObject(model)
                 .frame(width: LCTheme.panelWidth, height: LCTheme.panelHeight)
         )
+        // macOS 26: NSHostingView size extrema + safe-area invalidation can
+        // exceed AppKit's constraint-pass limit and abort the process.
+        host.sizingOptions = []
+        if #available(macOS 13.3, *) {
+            host.safeAreaRegions = []
+        }
         host.view.wantsLayer = true
         LCAppearance.applySystem(to: host.view)
         pop.contentViewController = host
@@ -343,6 +349,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 rootView: SettingsView()
                     .environmentObject(model)
             )
+            host.sizingOptions = []
+            if #available(macOS 13.3, *) {
+                host.safeAreaRegions = []
+            }
             host.view.appearance = NSApp.effectiveAppearance
             let window = NSWindow(contentViewController: host)
             window.title = "LocalClip 偏好设置"
@@ -354,9 +364,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             window.center()
             preferencesWindow = window
         } else {
-            preferencesWindow?.contentViewController = NSHostingController(
+            let host = NSHostingController(
                 rootView: SettingsView().environmentObject(model)
             )
+            host.sizingOptions = []
+            if #available(macOS 13.3, *) {
+                host.safeAreaRegions = []
+            }
+            preferencesWindow?.contentViewController = host
             preferencesWindow?.contentViewController?.view.appearance = NSApp.effectiveAppearance
             preferencesWindow?.setContentSize(NSSize(width: 520, height: 760))
         }

@@ -31,6 +31,10 @@ final class UpdateProgressController: NSObject {
                 self?.window?.close()
             }
         )
+        host.sizingOptions = []
+        if #available(macOS 13.3, *) {
+            host.safeAreaRegions = []
+        }
         host.view.appearance = NSApp.effectiveAppearance
         let win = NSWindow(contentViewController: host)
         win.title = "软件更新"

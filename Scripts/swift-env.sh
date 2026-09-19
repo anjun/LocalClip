@@ -45,7 +45,15 @@ localclip_sdk_works() {
   local arch cache_key
   arch="$(uname -m)"
   cache_key="$(basename "$(readlink "$sdk" 2>/dev/null || printf '%s' "$sdk")")"
-  printf 'import Foundation\n' \
+  # LocalClipApp uses SwiftUI property wrappers. The macOS 27 SDK turned @State
+  # into a SwiftUIMacros compiler plugin that Command Line Tools does not ship,
+  # so Foundation-only probes are not enough.
+  printf '%s\n' \
+    'import SwiftUI' \
+    'struct LocalClipSDKProbe: View {' \
+    '  @State private var flag = false' \
+    '  var body: some View { Text(flag ? "1" : "0") }' \
+    '}' \
     | swiftc \
       -sdk "$sdk" \
       -target "${arch}-apple-macosx14.0" \
