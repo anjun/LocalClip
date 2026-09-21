@@ -55,15 +55,6 @@ jobs:
           # release.sh still writes dist/ artifacts.
           SKIP_LOCAL_INSTALL=1 bash Scripts/release.sh
 
-      - name: Upload artifacts (workflow)
-        uses: actions/upload-artifact@v4
-        with:
-          name: LocalClip-${{ steps.ver.outputs.version }}-universal
-          path: |
-            dist/LocalClip-*-universal-macos.zip
-            dist/LocalClip-*-universal-macos.dmg
-            dist/LocalClip.app
-
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
         env:
