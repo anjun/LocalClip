@@ -53,6 +53,27 @@ public enum ScreenshotCaptureOutcome: Equatable, Sendable {
     case failed(ScreenshotCaptureFailure)
 }
 
+/// Menu-bar hotkeys have no visible panel, so permission outcomes need a
+/// follow-up the user can actually see.
+public enum ScreenshotHotKeyFollowUp: Equatable, Sendable {
+    case none
+    case awaitSystemPrompt
+    case openScreenCaptureSettings
+}
+
+public enum ScreenshotHotKeyRouting {
+    public static func followUp(for outcome: ScreenshotCaptureOutcome) -> ScreenshotHotKeyFollowUp {
+        switch outcome {
+        case .permissionRequestAttempted:
+            return .awaitSystemPrompt
+        case .permissionDenied:
+            return .openScreenCaptureSettings
+        case .captured, .cancelled, .ignoredAlreadyCapturing, .failed:
+            return .none
+        }
+    }
+}
+
 @MainActor
 public final class ScreenshotCapture {
     private let store: ClipboardStore

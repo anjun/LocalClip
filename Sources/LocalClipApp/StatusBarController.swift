@@ -275,10 +275,41 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             Task { @MainActor [weak self] in
-                // Permission UI is owned entirely by macOS. The hotkey path
-                // must never stack or repeat a LocalClip authorization alert.
-                _ = await self?.model.captureRegionScreenshot()
+                guard let self else { return }
+                // First request: let the system TCC prompt stand alone.
+                // Later denials (stale toggle / missing effective access) need
+                // a visible recovery path — the history panel is usually closed.
+                let outcome = await self.model.captureRegionScreenshot()
+                switch ScreenshotHotKeyRouting.followUp(for: outcome) {
+                case .none:
+                    break
+                case .awaitSystemPrompt:
+                    NSApp.activate(ignoringOtherApps: true)
+                case .openScreenCaptureSettings:
+                    self.presentScreenCaptureRecovery()
+                }
             }
+        }
+    }
+
+    /// Settings can show LocalClip as allowed while this process still cannot
+    /// image other windows (typical after an ad-hoc rebuild).
+    private func presentScreenCaptureRecovery() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "当前进程还不能截到其他窗口"
+        alert.informativeText = """
+        系统设置里的开关可能对应旧的 LocalClip。请删掉「屏幕录制」列表中的 LocalClip，再打开开关，然后完全退出并重新打开。
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "打开屏幕录制设置")
+        alert.addButton(withTitle: "退出并重新打开")
+        alert.addButton(withTitle: "好")
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            model.openScreenCaptureSettings()
+        } else if response == .alertSecondButtonReturn {
+            AccessibilityPaste.relaunchCurrentApp()
         }
     }
 

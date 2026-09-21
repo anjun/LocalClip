@@ -61,7 +61,19 @@ public final class MacOSScreenshotSystem: ScreenshotSystem, @unchecked Sendable 
     }
 
     public func requestAccess() -> Bool {
-        CGRequestScreenCaptureAccess()
+        // LSUIElement / accessory apps often never surface the TCC prompt
+        // unless they briefly become a regular, active app.
+        let app = NSApplication.shared
+        let previous = app.activationPolicy()
+        if previous != .regular {
+            app.setActivationPolicy(.regular)
+        }
+        app.activate(ignoringOtherApps: true)
+        let granted = CGRequestScreenCaptureAccess()
+        if previous != .regular {
+            app.setActivationPolicy(previous)
+        }
+        return granted
     }
 
     public func captureRegion(to outputURL: URL) async throws -> ScreenshotProcessResult {

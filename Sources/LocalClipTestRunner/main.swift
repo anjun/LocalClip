@@ -71,6 +71,8 @@ struct LocalClipTestRunner {
         runHotKeyShortcutTests()
         runHotKeyManagerTests()
         runScreenshotCaptureTests()
+        runScreenshotHotKeyFollowUpTests()
+        runInfoPlistPrivacyTests()
         runUpdateCheckerTests()
         runAppModelRetentionTests()
         runScreenshotHotKeySettingsTests()
@@ -2492,5 +2494,49 @@ struct LocalClipTestRunner {
             expect(false, "screenshot capture setup: \(error)")
         }
         expect(state.finished, "screenshot capture test completed")
+    }
+
+    static func runScreenshotHotKeyFollowUpTests() {
+        print("--- screenshot hotkey follow-up ---")
+        expect(
+            ScreenshotHotKeyRouting.followUp(for: .permissionRequestAttempted)
+                == .awaitSystemPrompt,
+            "first permission request waits for the system prompt"
+        )
+        expect(
+            ScreenshotHotKeyRouting.followUp(for: .permissionDenied)
+                == .openScreenCaptureSettings,
+            "stale or denied screen recording opens Settings recovery"
+        )
+        expect(
+            ScreenshotHotKeyRouting.followUp(for: .cancelled) == .none,
+            "cancel does not open Settings"
+        )
+        expect(
+            ScreenshotHotKeyRouting.followUp(for: .captured(history: .inserted)) == .none,
+            "successful capture does not open Settings"
+        )
+    }
+
+    static func runInfoPlistPrivacyTests() {
+        print("--- info.plist privacy ---")
+        let plistURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources/Info.plist")
+        expect(FileManager.default.fileExists(atPath: plistURL.path), "Info.plist exists at \(plistURL.path)")
+        guard let data = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let dict = plist as? [String: Any]
+        else {
+            expect(false, "Info.plist parses as a dictionary")
+            return
+        }
+        let description = dict["NSScreenCaptureUsageDescription"] as? String ?? ""
+        expect(
+            !description.isEmpty,
+            "NSScreenCaptureUsageDescription is required so macOS can show the Screen Recording prompt"
+        )
     }
 }
