@@ -184,7 +184,7 @@ struct HistoryPanel: View {
                 Text("纯文本")
             }
             .toggleStyle(LCChipToggleStyle())
-            .help("文本以纯文本粘贴；图片仍为图片")
+            .help("关闭时保留文本原有格式；开启时仅粘贴纯文本；图片不受影响")
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)

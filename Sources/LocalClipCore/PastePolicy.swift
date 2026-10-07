@@ -2,6 +2,7 @@ import Foundation
 
 public enum PastePayload: Equatable, Sendable {
     case text(String)
+    case richText(String, RichTextContent)
     case image(Data)
 }
 
@@ -28,7 +29,9 @@ public enum PastePolicy {
         switch item.kind {
         case .text:
             guard let text = item.textContent, !text.isEmpty else { return .nothing }
-            payload = .text(text)
+            payload = plainTextMode || item.richText.isEmpty
+                ? .text(text)
+                : .richText(text, item.richText)
         case .image:
             // Plain-text toggle does not convert images — still paste image.
             guard let data = imageData, !data.isEmpty else { return .nothing }
@@ -36,7 +39,6 @@ public enum PastePolicy {
         }
 
         guard let payload else { return .nothing }
-        _ = plainTextMode
 
         // Prefer auto-paste whenever attemptAutoPaste is true; trust flag only informs UI.
         if attemptAutoPaste || accessibilityTrusted {

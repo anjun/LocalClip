@@ -65,6 +65,7 @@ struct LocalClipTestRunner {
         runRetentionPolicyTests()
         runStoreTests()
         runPasteTests()
+        runRichTextTests()
         runGuardTests()
         runHasherAndOrdering()
         runSelectionTests()
@@ -1062,6 +1063,10 @@ struct LocalClipTestRunner {
                 changeCount += 1
                 return false
             }
+            func writeRichText(_ text: String, richText: RichTextContent) -> Bool {
+                changeCount += 1
+                return false
+            }
             func writeImageData(_ data: Data) -> Bool {
                 changeCount += 1
                 return false
@@ -1088,6 +1093,26 @@ struct LocalClipTestRunner {
         expect(
             !rejectingGuard.shouldIgnore(changeCount: rejectingBoard.changeCount),
             "pasteboard rejection clears paste self-write guard"
+        )
+        let rejectedRichItem = ClipboardItem(
+            kind: .text,
+            textContent: "hi",
+            richText: RichTextContent(html: Data("<strong>hi</strong>".utf8)),
+            contentHash: "rich"
+        )
+        rejectedKeystroke = false
+        expect(
+            rejectingService.paste(
+                item: rejectedRichItem,
+                imageData: nil,
+                plainTextMode: false
+            ) == .failed,
+            "rich text pasteboard rejection reports paste failure"
+        )
+        expect(!rejectedKeystroke, "rich text pasteboard rejection does not send Command-V")
+        expect(
+            !rejectingGuard.shouldIgnore(changeCount: rejectingBoard.changeCount),
+            "rich text pasteboard rejection clears paste self-write guard"
         )
     }
 
@@ -2221,6 +2246,10 @@ struct LocalClipTestRunner {
         final class FailingPasteboard: PasteboardWriting {
             var changeCount = 40
             func writeText(_ text: String) -> Bool {
+                changeCount += 1
+                return false
+            }
+            func writeRichText(_ text: String, richText: RichTextContent) -> Bool {
                 changeCount += 1
                 return false
             }

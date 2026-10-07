@@ -21,6 +21,21 @@ public final class SystemPasteboard: PasteboardWriting {
     }
 
     @discardableResult
+    public func writeRichText(_ text: String, richText: RichTextContent) -> Bool {
+        let item = NSPasteboardItem()
+        guard item.setString(text, forType: .string) else { return false }
+        for (type, data) in [
+            (NSPasteboard.PasteboardType.rtf, richText.rtf),
+            (.rtfd, richText.rtfd),
+            (.html, richText.html)
+        ] {
+            if let data, !item.setData(data, forType: type) { return false }
+        }
+        board.clearContents()
+        return board.writeObjects([item])
+    }
+
+    @discardableResult
     public func writeImageData(_ data: Data) -> Bool {
         board.clearContents()
         // Prefer raw bytes — never decode multi‑megapixel images on the main thread.
@@ -59,9 +74,19 @@ public final class SystemPasteboard: PasteboardWriting {
 
     public func readCapture(sourceBundleId: String?) -> ClipboardCapture {
         var text: String?
-        if let s = board.string(forType: .string),
-           !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            text = s
+        var richText = RichTextContent()
+        // Read all text representations from the same item. Board-wide lookups
+        // can accidentally combine one item's text with another item's format.
+        for item in board.pasteboardItems ?? [] {
+            guard let value = item.string(forType: .string),
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            text = value
+            richText = RichTextContent(
+                rtf: item.data(forType: .rtf),
+                rtfd: item.data(forType: .rtfd),
+                html: item.data(forType: .html)
+            )
+            break
         }
 
         // Prefer raw pasteboard bytes. Convert TIFF/other with ImageIO (safe off main).
@@ -77,7 +102,7 @@ public final class SystemPasteboard: PasteboardWriting {
             imageData = ThumbnailMaker.pngData(from: data)
         }
 
-        return ClipboardCapture(text: text, imageData: imageData, sourceBundleId: sourceBundleId)
+        return ClipboardCapture(text: text, richText: richText, imageData: imageData, sourceBundleId: sourceBundleId)
     }
 }
 

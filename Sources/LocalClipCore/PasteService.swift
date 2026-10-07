@@ -10,6 +10,7 @@ public enum PasteResult: Equatable, Sendable {
 public protocol PasteboardWriting: AnyObject {
     var changeCount: Int { get }
     @discardableResult func writeText(_ text: String) -> Bool
+    @discardableResult func writeRichText(_ text: String, richText: RichTextContent) -> Bool
     @discardableResult func writeImageData(_ data: Data) -> Bool
 }
 
@@ -17,6 +18,7 @@ public protocol PasteboardWriting: AnyObject {
 public final class MockPasteboard: PasteboardWriting {
     public var changeCount: Int = 0
     public var lastText: String?
+    public var lastRichText: RichTextContent?
     public var lastImage: Data?
 
     public init() {}
@@ -24,6 +26,16 @@ public final class MockPasteboard: PasteboardWriting {
     @discardableResult
     public func writeText(_ text: String) -> Bool {
         lastText = text
+        lastRichText = nil
+        lastImage = nil
+        changeCount += 1
+        return true
+    }
+
+    @discardableResult
+    public func writeRichText(_ text: String, richText: RichTextContent) -> Bool {
+        lastText = text
+        lastRichText = richText
         lastImage = nil
         changeCount += 1
         return true
@@ -33,6 +45,7 @@ public final class MockPasteboard: PasteboardWriting {
     public func writeImageData(_ data: Data) -> Bool {
         lastImage = data
         lastText = nil
+        lastRichText = nil
         changeCount += 1
         return true
     }
@@ -87,6 +100,8 @@ public final class PasteService: @unchecked Sendable {
             switch payload {
             case .text(let text):
                 didWrite = pasteboard.writeText(text)
+            case .richText(let text, let richText):
+                didWrite = pasteboard.writeRichText(text, richText: richText)
             case .image(let data):
                 didWrite = pasteboard.writeImageData(data)
             }

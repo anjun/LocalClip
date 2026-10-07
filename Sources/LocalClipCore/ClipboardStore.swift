@@ -65,7 +65,10 @@ public final class ClipboardStore: @unchecked Sendable {
           image_path TEXT,
           thumb_path TEXT,
           source_bundle_id TEXT,
-          byte_size INTEGER NOT NULL DEFAULT 0
+          byte_size INTEGER NOT NULL DEFAULT 0,
+          rtf_data BLOB,
+          rtfd_data BLOB,
+          html_data BLOB
         );
         CREATE INDEX IF NOT EXISTS idx_items_created_at ON items(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_items_kind_created ON items(kind, created_at DESC);
@@ -73,11 +76,47 @@ public final class ClipboardStore: @unchecked Sendable {
           path TEXT PRIMARY KEY NOT NULL
         );
         """)
+        try migrateRichTextColumns()
     }
 
     deinit {
         if let db {
             sqlite3_close(db)
+        }
+    }
+
+    /// Existing histories have the original nine columns. Add all rich-text
+    /// columns together, preserving rows and allowing the migration to run again.
+    private func migrateRichTextColumns() throws {
+        try exec("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            let columns = try itemColumnNames()
+            for column in ["rtf_data", "rtfd_data", "html_data"] where !columns.contains(column) {
+                try exec("ALTER TABLE items ADD COLUMN \(column) BLOB;")
+            }
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func itemColumnNames() throws -> Set<String> {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(items);", -1, &stmt, nil) == SQLITE_OK else {
+            throw ClipboardStoreError.execFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        var columns = Set<String>()
+        while true {
+            switch sqlite3_step(stmt) {
+            case SQLITE_ROW:
+                if let name = strictTextColumn(stmt, 1) { columns.insert(name) }
+            case SQLITE_DONE:
+                return columns
+            default:
+                throw ClipboardStoreError.execFailed(lastError())
+            }
         }
     }
 
@@ -116,7 +155,12 @@ public final class ClipboardStore: @unchecked Sendable {
             }
 
             if capture.hasText, let text = capture.text {
-                if let item = try insertTextLocked(text: text, createdAt: textTime, source: source) {
+                if let item = try insertTextLocked(
+                    text: text,
+                    richText: capture.richText,
+                    createdAt: textTime,
+                    source: source
+                ) {
                     built.append(item)
                 }
             }
@@ -128,13 +172,19 @@ public final class ClipboardStore: @unchecked Sendable {
     }
 
     @discardableResult
-    public func insertText(_ text: String, createdAt: Date? = nil, sourceBundleId: String? = nil) throws -> ClipboardItem? {
+    public func insertText(
+        _ text: String,
+        richText: RichTextContent = RichTextContent(),
+        createdAt: Date? = nil,
+        sourceBundleId: String? = nil
+    ) throws -> ClipboardItem? {
         let item: ClipboardItem?
         do {
             lock.lock()
             defer { lock.unlock() }
             item = try insertTextLocked(
                 text: text,
+                richText: richText,
                 createdAt: createdAt ?? clock.now(),
                 source: sourceBundleId
             )
@@ -288,8 +338,13 @@ public final class ClipboardStore: @unchecked Sendable {
         return nil
     }
 
-    private func insertTextLocked(text: String, createdAt: Date, source: String?) throws -> ClipboardItem? {
-        let hash = ContentHasher.sha256Hex(ofText: text)
+    private func insertTextLocked(
+        text: String,
+        richText: RichTextContent,
+        createdAt: Date,
+        source: String?
+    ) throws -> ClipboardItem? {
+        let hash = ContentHasher.sha256Hex(ofText: text, richText: richText)
         if let newest = try newestHashLocked(kind: .text), newest == hash {
             return nil // adjacent same-kind dedupe
         }
@@ -297,9 +352,10 @@ public final class ClipboardStore: @unchecked Sendable {
             kind: .text,
             createdAt: createdAt,
             textContent: text,
+            richText: richText,
             contentHash: hash,
             sourceBundleId: source,
-            byteSize: text.utf8.count
+            byteSize: text.utf8.count + richText.byteSize
         )
         try insertRowLocked(item)
         return item
@@ -340,8 +396,8 @@ public final class ClipboardStore: @unchecked Sendable {
 
     private func insertRowLocked(_ item: ClipboardItem) throws {
         let sql = """
-        INSERT INTO items (id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        INSERT INTO items (id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size, rtf_data, rtfd_data, html_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -357,6 +413,9 @@ public final class ClipboardStore: @unchecked Sendable {
         if let p = item.thumbPath { bindText(stmt, 7, p) } else { sqlite3_bind_null(stmt, 7) }
         if let s = item.sourceBundleId { bindText(stmt, 8, s) } else { sqlite3_bind_null(stmt, 8) }
         sqlite3_bind_int64(stmt, 9, Int64(item.byteSize))
+        bindData(stmt, 10, item.richText.rtf)
+        bindData(stmt, 11, item.richText.rtfd)
+        bindData(stmt, 12, item.richText.html)
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw ClipboardStoreError.execFailed(lastError())
         }
@@ -411,7 +470,7 @@ public final class ClipboardStore: @unchecked Sendable {
     /// Rows older than the retention cutoff (newest first).
     private func fetchItemsOlderThanLocked(_ cutoff: Date) throws -> [ClipboardItem] {
         let sql = """
-        SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+        SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size, rtf_data, rtfd_data, html_data
         FROM items
         WHERE created_at < ?
         ORDER BY created_at DESC;
@@ -431,7 +490,7 @@ public final class ClipboardStore: @unchecked Sendable {
         let sql: String
         if minCreatedAt != nil {
             sql = """
-            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size, rtf_data, rtfd_data, html_data
             FROM items
             WHERE created_at >= ?
             ORDER BY created_at DESC
@@ -439,7 +498,7 @@ public final class ClipboardStore: @unchecked Sendable {
             """
         } else {
             sql = """
-            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size, rtf_data, rtfd_data, html_data
             FROM items
             ORDER BY created_at DESC
             LIMIT -1 OFFSET ?;
@@ -664,7 +723,7 @@ public final class ClipboardStore: @unchecked Sendable {
 
     private func fetchByIdLocked(_ id: String) throws -> ClipboardItem? {
         let sql = """
-        SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+        SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size, rtf_data, rtfd_data, html_data
         FROM items WHERE id = ? LIMIT 1;
         """
         var stmt: OpaquePointer?
@@ -687,14 +746,14 @@ public final class ClipboardStore: @unchecked Sendable {
         let sql: String
         if query != nil {
             sql = """
-            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size, rtf_data, rtfd_data, html_data
             FROM items
             WHERE kind = 'text' AND text_content IS NOT NULL AND LOWER(text_content) LIKE '%' || LOWER(?) || '%'
             ORDER BY created_at DESC;
             """
         } else {
             sql = """
-            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size
+            SELECT id, kind, created_at, text_content, content_hash, image_path, thumb_path, source_bundle_id, byte_size, rtf_data, rtfd_data, html_data
             FROM items
             ORDER BY created_at DESC;
             """
@@ -732,11 +791,17 @@ public final class ClipboardStore: @unchecked Sendable {
         let thumbPath = colText(6)
         let source = colText(7)
         let size = Int(sqlite3_column_int64(stmt, 8))
+        let richText = RichTextContent(
+            rtf: dataColumn(stmt, 9),
+            rtfd: dataColumn(stmt, 10),
+            html: dataColumn(stmt, 11)
+        )
         return ClipboardItem(
             id: id,
             kind: kind,
             createdAt: created,
             textContent: text,
+            richText: richText,
             contentHash: hash,
             imagePath: imagePath,
             thumbPath: thumbPath,
@@ -756,6 +821,14 @@ public final class ClipboardStore: @unchecked Sendable {
         )
     }
 
+    private func dataColumn(_ stmt: OpaquePointer?, _ index: Int32) -> Data? {
+        guard sqlite3_column_type(stmt, index) == SQLITE_BLOB,
+              let bytes = sqlite3_column_blob(stmt, index) else { return nil }
+        let byteCount = Int(sqlite3_column_bytes(stmt, index))
+        guard byteCount > 0 else { return nil }
+        return Data(bytes: bytes, count: byteCount)
+    }
+
     private func exec(_ sql: String) throws {
         var err: UnsafeMutablePointer<CChar>?
         if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
@@ -773,6 +846,22 @@ public final class ClipboardStore: @unchecked Sendable {
     private func bindText(_ stmt: OpaquePointer?, _ idx: Int32, _ value: String) {
         _ = value.withCString { cstr in
             sqlite3_bind_text(stmt, idx, cstr, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        }
+    }
+
+    private func bindData(_ stmt: OpaquePointer?, _ idx: Int32, _ value: Data?) {
+        guard let value, !value.isEmpty else {
+            sqlite3_bind_null(stmt, idx)
+            return
+        }
+        _ = value.withUnsafeBytes { bytes in
+            sqlite3_bind_blob64(
+                stmt,
+                idx,
+                bytes.baseAddress,
+                sqlite3_uint64(bytes.count),
+                unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            )
         }
     }
 }

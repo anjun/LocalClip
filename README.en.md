@@ -55,7 +55,9 @@ Source builds and current releases use ad-hoc signing. If an update drops the gr
 | Click a row | Write pasteboard + try auto-paste |
 | Right-click status item | Region capture, preferences, updates, quit |
 
-Search text in the panel; optional plain-text paste (text only). Preferences lets you set the item-count limit and retention duration independently; the default remains **200 items / 7 days**. Choosing a permanent duration disables age-based cleanup, while the item-count limit continues to apply.
+Search text in the panel. With **Plain text** off (the default), pasting from history preserves the source's RTF, RTFD, and HTML representations, including fonts, colors, links, and lists where supported by the receiving app. Turn it on to paste text without formatting; images are unaffected. History previews and search still use plain text. Entries captured before this feature need to be copied again to retain their formatting.
+
+Preferences lets you set the item-count limit and retention duration independently; the default remains **200 items / 7 days**. Choosing a permanent duration disables age-based cleanup, while the item-count limit continues to apply.
 
 ## Privacy
 
