@@ -1,14 +1,17 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import ImageIO
 
 public final class MacOSScreenshotSystem: ScreenshotSystem, @unchecked Sendable {
+    private var captureSound: NSSound?
     public init() {}
 
-    public static func captureArguments(to outputURL: URL) -> [String] {
-        // No `-x`: preserve the native capture sound. Interactive selection does not
-        // include the cursor, so `-C` is intentionally absent as well.
-        ["-i", "-s", "-t", "png", outputURL.path]
+    public static func captureArguments(for frame: CGRect, to outputURL: URL) -> [String] {
+        let bounds = frame.integral
+        let rectangle = "\(Int(bounds.minX)),\(Int(bounds.minY)),\(Int(bounds.width)),\(Int(bounds.height))"
+        // Freeze each screen silently, without the cursor or selection overlay.
+        return ["-x", "-R", rectangle, "-t", "png", outputURL.path]
     }
 
     public func preflightAccess() -> Bool {
@@ -77,26 +80,97 @@ public final class MacOSScreenshotSystem: ScreenshotSystem, @unchecked Sendable 
     }
 
     public func captureRegion(to outputURL: URL) async throws -> ScreenshotProcessResult {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            let errorPipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-            process.arguments = Self.captureArguments(to: outputURL)
-            process.standardError = errorPipe
-            process.terminationHandler = { process in
-                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                let errorText = String(data: errorData, encoding: .utf8) ?? ""
-                continuation.resume(returning: ScreenshotProcessResult(
-                    terminationStatus: process.terminationStatus,
-                    standardError: errorText
-                ))
+        try await captureWithAdjustableSelection(to: outputURL)
+    }
+
+    @MainActor
+    private func captureWithAdjustableSelection(to outputURL: URL) async throws -> ScreenshotProcessResult {
+        let screens = NSScreen.screens.compactMap { screen -> DisplayDescriptor? in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                return nil
             }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
+            let frame = CGDisplayBounds(number.uint32Value)
+            guard !frame.isEmpty else { return nil }
+            return DisplayDescriptor(frame: frame, screenFrame: screen.frame)
         }
+        guard !screens.isEmpty else { throw SelectionError(message: "没有可截图的屏幕") }
+        // Enumerate before our own windows are shown, preserving front-to-back order.
+        let candidates = Self.visibleWindowCandidates()
+        let snapshots = try await Task.detached(priority: .userInitiated) {
+            try screens.map { screen in
+                try Task.checkCancellation()
+                return try Self.freeze(screen)
+            }
+        }.value
+        try Task.checkCancellation()
+        let selector = ScreenshotSelectionController(snapshots: snapshots, windows: candidates)
+        guard let region = await selector.select() else {
+            return ScreenshotProcessResult(terminationStatus: 0, standardError: "")
+        }
+        try await Task.detached(priority: .userInitiated) {
+            guard let data = ScreenshotSnapshotRenderer.pngData(for: region, snapshots: snapshots) else {
+                throw SelectionError(message: "无法生成选区图片")
+            }
+            try data.write(to: outputURL, options: .atomic)
+        }.value
+        captureSound = NSSound(contentsOf: URL(fileURLWithPath:
+            "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Grab.aif"
+        ), byReference: true)
+        captureSound?.play()
+        return ScreenshotProcessResult(terminationStatus: 0, standardError: "")
+    }
+
+    private struct DisplayDescriptor: Sendable {
+        let frame: CGRect
+        let screenFrame: CGRect
+    }
+
+    private struct SelectionError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    private static func visibleWindowCandidates() -> [ScreenshotWindowCandidate] {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let entries = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+        return entries.compactMap { entry in
+            guard let id = entry[kCGWindowNumber as String] as? NSNumber,
+                  let owner = entry[kCGWindowOwnerPID as String] as? NSNumber,
+                  owner.int32Value > 0,
+                  (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  ((entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0.01,
+                  let bounds = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  frame.width >= 16, frame.height >= 16 else { return nil }
+            return ScreenshotWindowCandidate(id: id.uint32Value, frame: frame)
+        }
+    }
+
+    private static func freeze(_ screen: DisplayDescriptor) throws -> ScreenshotDisplaySnapshot {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalClip-Display-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let process = Process()
+        let errorPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        process.arguments = captureArguments(for: screen.frame, to: file)
+        process.standardError = errorPipe
+        try process.run()
+        // This worker runs off the main actor; the selection UI remains responsive.
+        process.waitUntilExit()
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0,
+              let source = CGImageSourceCreateWithURL(file as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [
+                kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary) else {
+            let detail = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw SelectionError(message: detail.isEmpty ? "无法读取屏幕内容" : detail)
+        }
+        return ScreenshotDisplaySnapshot(frame: screen.frame, screenFrame: screen.screenFrame, image: image)
     }
 
     public func openSystemSettings() {

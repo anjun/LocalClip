@@ -62,6 +62,11 @@ struct LocalClipTestRunner {
     static var failures = 0
 
     static func main() {
+        if CommandLine.arguments.contains("--verify-screenshot-selection-ui") {
+            runScreenshotSelectionUITests()
+            print(failures == 0 ? "ALL UI TESTS PASSED" : "FAILED: \(failures) UI assertion(s)")
+            exit(failures == 0 ? 0 : 1)
+        }
         runRetentionPolicyTests()
         runStoreTests()
         runPasteTests()
@@ -72,6 +77,8 @@ struct LocalClipTestRunner {
         runHotKeyShortcutTests()
         runHotKeyManagerTests()
         runScreenshotCaptureTests()
+        runScreenshotSelectionTests()
+        runScreenshotSnapshotTests()
         runScreenshotHotKeyFollowUpTests()
         runInfoPlistPrivacyTests()
         runUpdateCheckerTests()
@@ -2169,16 +2176,18 @@ struct LocalClipTestRunner {
     static func runScreenshotCaptureTests() {
         print("--- screenshot capture ---")
         let commandOutput = URL(fileURLWithPath: "/tmp/LocalClip-command-test.png")
-        let commandArguments = MacOSScreenshotSystem.captureArguments(to: commandOutput)
-        expect(
-            commandArguments == ["-i", "-s", "-t", "png", commandOutput.path],
-            "macOS command uses interactive region-only PNG capture"
+        let commandArguments = MacOSScreenshotSystem.captureArguments(
+            for: CGRect(x: -1920, y: 0, width: 1920, height: 1080), to: commandOutput
         )
         expect(
-            !commandArguments.contains("-x")
+            commandArguments == ["-x", "-R", "-1920,0,1920,1080", "-t", "png", commandOutput.path],
+            "macOS command freezes the requested display, including negative coordinates"
+        )
+        expect(
+            commandArguments.contains("-x")
                 && !commandArguments.contains("-C")
                 && !commandArguments.contains("-c"),
-            "macOS command keeps system sound, omits cursor, and writes only its temp file"
+            "background capture is silent, omits cursor, and writes only its temp file"
         )
         expect(
             MacOSScreenshotSystem.isUsableWindowCapture(nil) == false,
