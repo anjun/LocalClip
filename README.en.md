@@ -78,7 +78,7 @@ make test
 make package   # → updates the existing install location (or a writable Applications folder)
 ```
 
-Universal release bundle: `make release`. `make public` refreshes local `dist/` first, then pushes a `v*` tag for GitHub Actions to publish.
+Universal release bundle: `make release`. `make public` refreshes local `dist/`, pushes the commit, and waits for that exact commit's cloud tests and universal package build to pass before creating a `v*` tag. CI and Release share a pinned Xcode toolchain. Failed or missing CI prevents tag creation.
 
 ## License
 

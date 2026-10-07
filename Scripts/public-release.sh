@@ -132,6 +132,8 @@ if [[ "${CURRENT}" != "${VERSION}" ]]; then
   git commit -m "chore: bump version to ${VERSION}"
 fi
 
+RELEASE_COMMIT="$(git rev-parse HEAD)"
+
 # `make public` must not leave a stale local `dist/` tree behind. Build the
 # exact version being tagged, but do not install another LocalClip copy.
 echo "==> Building local ${VERSION} release artifacts before publishing"
@@ -141,6 +143,10 @@ BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
   "$ROOT/dist/LocalClip.app/Contents/Info.plist" 2>/dev/null || true)"
 if [[ "$BUILT_VERSION" != "$VERSION" ]]; then
   echo "error: local release version mismatch (expected ${VERSION}, got ${BUILT_VERSION:-missing})" >&2
+  exit 1
+fi
+if [[ "$(git rev-parse HEAD)" != "$RELEASE_COMMIT" || -n "$(git status --porcelain)" ]]; then
+  echo "error: checkout changed while building; refusing to publish unverified contents" >&2
   exit 1
 fi
 
@@ -156,8 +162,39 @@ fi
 echo "==> Pushing branch ${BRANCH}"
 git push -u origin "${BRANCH}"
 
+# Validate the exact commit with the same toolchain and universal packaging
+# command used by Release. A failed or missing CI must never create a tag.
+echo "==> Waiting for CI on ${RELEASE_COMMIT} before creating the release tag"
+CI_RUN_ID=""
+for ((CI_DISCOVERY_ATTEMPT = 1; CI_DISCOVERY_ATTEMPT <= 30; CI_DISCOVERY_ATTEMPT++)); do
+  CI_RUN_ID="$(gh run list --workflow ci.yml --branch "$BRANCH" \
+    --commit "$RELEASE_COMMIT" --limit 1 --json databaseId \
+    --jq '.[0].databaseId // empty')"
+  if [[ -n "$CI_RUN_ID" ]]; then break; fi
+  sleep 2
+done
+if [[ -z "$CI_RUN_ID" ]]; then
+  echo "error: no CI run found for ${RELEASE_COMMIT}; no release tag created" >&2
+  exit 1
+fi
+if ! gh run watch "$CI_RUN_ID" --interval 10 --exit-status; then
+  echo "error: CI failed for ${RELEASE_COMMIT}; no release tag created" >&2
+  exit 1
+fi
+CI_VERIFICATION="$(gh run view "$CI_RUN_ID" --json headSha,conclusion \
+  --jq '.headSha + " " + .conclusion')"
+read -r CI_COMMIT CI_CONCLUSION <<<"$CI_VERIFICATION"
+if [[ "$CI_COMMIT" != "$RELEASE_COMMIT" || "$CI_CONCLUSION" != "success" ]]; then
+  echo "error: CI did not verify the release commit successfully; no release tag created" >&2
+  exit 1
+fi
+if [[ "$(git rev-parse HEAD)" != "$RELEASE_COMMIT" || -n "$(git status --porcelain)" ]]; then
+  echo "error: checkout changed during CI; refusing to publish" >&2
+  exit 1
+fi
+
 echo "==> Creating annotated tag ${TAG}"
-git tag -a "${TAG}" -m "LocalClip ${VERSION}"
+git tag -a "${TAG}" "$RELEASE_COMMIT" -m "LocalClip ${VERSION}"
 
 echo "==> Pushing tag ${TAG} (triggers GitHub Release workflow)"
 git push origin "${TAG}"

@@ -78,7 +78,7 @@ make test
 make package   # → 更新现有安装位置；没有旧版时选择可写的 Applications
 ```
 
-通用发布包：`make release`。`make public` 会先刷新本地 `dist/`，再推送 `v*` 标签并由 GitHub Actions 发布 Release。
+通用发布包：`make release`。`make public` 会先刷新本地 `dist/`，推送提交并等待该提交的云端测试和通用打包全部通过，再创建 `v*` 标签并发布 Release。CI 和 Release 共用固定的 Xcode 工具链；CI 失败或缺失时不会创建发布标签。
 
 ## 许可证
 

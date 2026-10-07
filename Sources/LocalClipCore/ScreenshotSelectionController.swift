@@ -43,7 +43,7 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
                 self.presentOverlays()
             }
         } onCancel: { [weak self] in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.finish(with: nil, session: session)
             }
         }
@@ -60,7 +60,7 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.finish(with: nil, session: session) }
+            Task { @MainActor [weak self] in self?.finish(with: nil, session: session) }
         }
         let previousPID = previousApplication?.processIdentifier
         let workspaceNotifications = NSWorkspace.shared.notificationCenter
@@ -71,14 +71,14 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
         ) { [weak self] notification in
             guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   application.processIdentifier != previousPID else { return }
-            Task { @MainActor in self?.finish(with: nil, session: session) }
+            Task { @MainActor [weak self] in self?.finish(with: nil, session: session) }
         }
         spaceObserver = workspaceNotifications.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.finish(with: nil, session: session) }
+            Task { @MainActor [weak self] in self?.finish(with: nil, session: session) }
         }
 
         for snapshot in snapshots {

@@ -17,10 +17,13 @@ permissions:
 jobs:
   build-and-release:
     name: Universal package + GitHub Release
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup-toolchain
 
       - name: Resolve version from tag
         id: ver
@@ -46,14 +49,10 @@ jobs:
           plutil -p Resources/Info.plist
 
       - name: Run tests
-        run: swift run -c release LocalClipTestRunner
+        run: make test
 
       - name: Build universal package
-        run: |
-          chmod +x Scripts/release.sh
-          # Skip local ~/Applications install noise in CI by env flag if supported;
-          # release.sh still writes dist/ artifacts.
-          SKIP_LOCAL_INSTALL=1 bash Scripts/release.sh
+        run: SKIP_LOCAL_INSTALL=1 bash Scripts/release.sh
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
