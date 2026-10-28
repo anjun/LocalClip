@@ -37,8 +37,12 @@ extension LocalClipTestRunner {
             ScreenshotDisplaySnapshot(frame: frame, screenFrame: frame, image: image)
         }
 
-        func decode(_ region: CGRect, _ snapshots: [ScreenshotDisplaySnapshot]) -> (CGImage, NSDictionary)? {
-            guard let data = ScreenshotSnapshotRenderer.pngData(for: region, snapshots: snapshots),
+        func decode(
+            _ region: CGRect,
+            _ snapshots: [ScreenshotDisplaySnapshot],
+            strokes: [ScreenshotInkStroke] = []
+        ) -> (CGImage, NSDictionary)? {
+            guard let data = ScreenshotSnapshotRenderer.pngData(for: region, snapshots: snapshots, strokes: strokes),
                   let source = CGImageSourceCreateWithData(data as CFData, nil),
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) else {
@@ -67,6 +71,33 @@ extension LocalClipTestRunner {
             expect(sampled && zip(bytes.prefix(3), expected).allSatisfy {
                 abs(Int($0.0) - Int($0.1)) <= 3
             } && bytes[3] == 255, message)
+        }
+
+        func isInk(_ image: CGImage, _ x: Int, _ y: Int) -> Bool {
+            guard x >= 0, y >= 0, x < image.width, y < image.height,
+                  let pixel = image.cropping(to: CGRect(x: x, y: y, width: 1, height: 1)) else { return false }
+            var bytes = [UInt8](repeating: 0, count: 4)
+            let sampled = bytes.withUnsafeMutableBytes { buffer -> Bool in
+                guard let context = CGContext(
+                    data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                        | CGBitmapInfo.byteOrder32Big.rawValue
+                ) else { return false }
+                context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+                return true
+            }
+            return sampled && bytes[0] > 200 && bytes[1] < 120 && bytes[2] < 120 && bytes[3] == 255
+        }
+
+        func expectInk(_ image: CGImage, _ x: Int, _ y: Int, _ message: String) {
+            var found = false
+            for dy in -2...2 {
+                for dx in -2...2 where isInk(image, x + dx, y + dy) {
+                    found = true
+                }
+            }
+            expect(found, message)
         }
 
         let frame = CGRect(x: 0, y: 0, width: 100, height: 80)
@@ -113,6 +144,35 @@ extension LocalClipTestRunner {
         if let (image, _) = decode(CGRect(x: -10, y: -10, width: 40, height: 30), [normal]) {
             expect(image.width == 30 && image.height == 20, "offscreen selection clips to captured display content")
             expectPixel(image, 15, 10, red, "clipping preserves the first visible source pixels")
+        }
+
+        expect(ScreenshotSnapshotRenderer.pngData(for: frame, snapshots: [normal])
+               == ScreenshotSnapshotRenderer.pngData(for: frame, snapshots: [normal], strokes: []),
+               "an empty pen leaves the captured PNG unchanged")
+        let line = ScreenshotInkStroke(points: [CGPoint(x: 60, y: 10), CGPoint(x: 80, y: 10)])
+        let dot = ScreenshotInkStroke(points: [CGPoint(x: 20, y: 50)])
+        if let (image, _) = decode(frame, [normal], strokes: [line, dot]) {
+            expectInk(image, 70, 10, "a horizontal pen stroke is burned into the top of the PNG")
+            expectPixel(image, 90, 10, green, "pixels beyond the stroke keep their original color")
+            expectPixel(image, 70, 30, green, "the pen does not flip a top stroke to the bottom")
+            expectInk(image, 20, 50, "a click becomes a visible dot in the captured PNG")
+            expectPixel(image, 20, 70, blue, "a dot does not recolor the rest of its quadrant")
+        }
+        let outside = ScreenshotInkStroke(points: [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 10)])
+        if let (image, _) = decode(CGRect(x: 0, y: 40, width: 100, height: 40), [normal], strokes: [outside]) {
+            var leaked = false
+            for y in stride(from: 0, to: image.height, by: 2) {
+                for x in stride(from: 0, to: image.width, by: 2) where isInk(image, x, y) {
+                    leaked = true
+                }
+            }
+            expect(!leaked, "a stroke outside the crop is not burned into the PNG")
+        }
+        let retinaStroke = ScreenshotInkStroke(points: [CGPoint(x: 58, y: 47), CGPoint(x: 72, y: 47)])
+        if let (image, _) = decode(CGRect(x: 55, y: 45, width: 20, height: 15), [retina], strokes: [retinaStroke]) {
+            expect(image.width == 40 && image.height == 30, "pen marks keep the Retina crop size")
+            expectInk(image, 20, 4, "a Retina pen stroke lands on the top edge of the crop")
+            expectPixel(image, 20, 24, yellow, "a Retina pen stroke stays off the bottom of the crop")
         }
 
         for region in [CGRect.zero, CGRect(x: 0, y: 0, width: 0, height: 10),

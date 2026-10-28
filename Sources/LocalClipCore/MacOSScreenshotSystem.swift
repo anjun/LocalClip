@@ -104,11 +104,15 @@ public final class MacOSScreenshotSystem: ScreenshotSystem, @unchecked Sendable 
         }.value
         try Task.checkCancellation()
         let selector = ScreenshotSelectionController(snapshots: snapshots, windows: candidates)
-        guard let region = await selector.select() else {
+        guard let selection = await selector.select() else {
             return ScreenshotProcessResult(terminationStatus: 0, standardError: "")
         }
         try await Task.detached(priority: .userInitiated) {
-            guard let data = ScreenshotSnapshotRenderer.pngData(for: region, snapshots: snapshots) else {
+            guard let data = ScreenshotSnapshotRenderer.pngData(
+                for: selection.region,
+                snapshots: snapshots,
+                strokes: selection.strokes
+            ) else {
                 throw SelectionError(message: "无法生成选区图片")
             }
             try data.write(to: outputURL, options: .atomic)

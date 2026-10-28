@@ -17,10 +17,22 @@ public enum ScreenshotSelectionHandle: CaseIterable, Sendable {
     case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
 }
 
-/// Owns selection geometry independently of the capture overlay and AppKit.
+/// Owns selection geometry and pen strokes independently of the capture overlay and AppKit.
 public struct ScreenshotSelectionModel {
     public private(set) var selection: CGRect?
     public private(set) var isLocked = false
+    public private(set) var strokes: [ScreenshotInkStroke] = []
+    private var activeStroke: [CGPoint] = []
+
+    public var canUndoInk: Bool {
+        !strokes.isEmpty || !activeStroke.isEmpty
+    }
+
+    /// Committed strokes plus the one currently being drawn.
+    public var inkStrokes: [ScreenshotInkStroke] {
+        guard !activeStroke.isEmpty else { return strokes }
+        return strokes + [ScreenshotInkStroke(points: activeStroke)]
+    }
 
     public var confirmableRect: CGRect? {
         selection.flatMap { Self.isUsable($0) ? $0 : nil }
@@ -108,7 +120,46 @@ public struct ScreenshotSelectionModel {
     public mutating func reset() {
         activeDrag = nil
         isLocked = false
+        clearInk()
         selection = lastHover.flatMap { windowFrame(at: $0) }
+    }
+
+    /// Starts a stroke when the point lies inside the locked selection.
+    /// Returns false when the pen cannot mark there.
+    public mutating func beginStroke(at point: CGPoint) -> Bool {
+        guard activeDrag == nil, isLocked, let bounds = selection, Self.containsInclusive(bounds, point) else {
+            return false
+        }
+        endStroke()
+        activeStroke = [point]
+        return true
+    }
+
+    public mutating func extendStroke(to point: CGPoint) {
+        guard activeDrag == nil, isLocked, let bounds = selection, let last = activeStroke.last, Self.isFinite(point) else {
+            return
+        }
+        let clamped = CGPoint(
+            x: min(max(point.x, bounds.minX), bounds.maxX),
+            y: min(max(point.y, bounds.minY), bounds.maxY)
+        )
+        guard Self.isFinite(clamped), hypot(clamped.x - last.x, clamped.y - last.y) >= 0.5 else { return }
+        activeStroke.append(clamped)
+    }
+
+    public mutating func endStroke() {
+        guard !activeStroke.isEmpty else { return }
+        strokes.append(ScreenshotInkStroke(points: activeStroke))
+        activeStroke = []
+    }
+
+    public mutating func undoStroke() {
+        if !activeStroke.isEmpty {
+            activeStroke = []
+            return
+        }
+        guard !strokes.isEmpty else { return }
+        strokes.removeLast()
     }
 
     public func handle(at point: CGPoint, tolerance: CGFloat = 7) -> ScreenshotSelectionHandle? {
@@ -151,6 +202,9 @@ public struct ScreenshotSelectionModel {
     }
 
     private mutating func updateFreeSelection(from start: CGPoint, to point: CGPoint) {
+        // A brand-new region should not keep marks made on the previous one.
+        // Moving or resizing never comes through here, so those marks stay put.
+        clearInk()
         let end = clamped(point)
         let frame = CGRect(x: min(start.x, end.x), y: min(start.y, end.y),
                            width: abs(start.x - end.x), height: abs(start.y - end.y))
@@ -193,6 +247,17 @@ public struct ScreenshotSelectionModel {
         case .bottomLeft: return CGPoint(x: rect.minX, y: rect.maxY)
         case .left: return CGPoint(x: rect.minX, y: rect.midY)
         }
+    }
+
+    private mutating func clearInk() {
+        strokes = []
+        activeStroke = []
+    }
+
+    private static func containsInclusive(_ rect: CGRect, _ point: CGPoint) -> Bool {
+        guard isFinite(point), isFinite(rect), !rect.isNull else { return false }
+        return point.x >= rect.minX && point.x <= rect.maxX
+            && point.y >= rect.minY && point.y <= rect.maxY
     }
 
     private static func isUsable(_ rect: CGRect) -> Bool {

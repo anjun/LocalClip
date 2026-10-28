@@ -11,14 +11,17 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
     fileprivate var model: ScreenshotSelectionModel
     private var overlayWindows: [ScreenshotSelectionWindow] = []
     private var overlayViews: [ScreenshotSelectionView] = []
-    private var continuation: CheckedContinuation<CGRect?, Never>?
+    private var continuation: CheckedContinuation<ScreenshotSelectionResult?, Never>?
     private var activeSession: UUID?
     private var screenObserver: NSObjectProtocol?
     private var appSwitchObserver: NSObjectProtocol?
     private var spaceObserver: NSObjectProtocol?
     private var previousApplication: NSRunningApplication?
     private var doubleClickStart: CGPoint?
+    private var lastPointer: CGPoint?
     fileprivate var isDragging = false
+    fileprivate var isPenEnabled = false
+    fileprivate var isInking = false
 
     public init(snapshots: [ScreenshotDisplaySnapshot], windows: [ScreenshotWindowCandidate]) {
         self.snapshots = snapshots
@@ -27,8 +30,8 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
         super.init()
     }
 
-    /// Returns a confirmed Quartz-global rectangle, or nil when cancelled.
-    public func select() async -> CGRect? {
+    /// Returns the confirmed region and pen strokes, or nil when cancelled.
+    public func select() async -> ScreenshotSelectionResult? {
         guard activeSession == nil, !snapshots.isEmpty, !Task.isCancelled else { return nil }
         let session = UUID()
         activeSession = session
@@ -53,7 +56,10 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
         previousApplication = NSWorkspace.shared.frontmostApplication
         model.reset()
         isDragging = false
+        isInking = false
+        isPenEnabled = false
         doubleClickStart = nil
+        lastPointer = nil
         let session = activeSession
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -115,6 +121,7 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
             x: snapshot.frame.minX + mouse.x - snapshot.screenFrame.minX,
             y: snapshot.frame.minY + snapshot.screenFrame.maxY - mouse.y
         )
+        lastPointer = initialPoint
         model.updateHover(at: initialPoint)
         refreshOverlays()
         // The capture surface takes keyboard focus without activating LocalClip.
@@ -127,7 +134,38 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
     }
 
     fileprivate func movePointer(to point: CGPoint) {
+        lastPointer = point
         model.updateHover(at: point)
+        refreshOverlays()
+        updateCursor(at: point)
+    }
+
+    fileprivate func beginStroke(at point: CGPoint) {
+        guard isPenEnabled else { return }
+        lastPointer = point
+        if model.beginStroke(at: point) {
+            isInking = true
+        } else {
+            model.endStroke()
+            isInking = false
+        }
+        refreshOverlays()
+        updateCursor(at: point)
+    }
+
+    fileprivate func extendStroke(to point: CGPoint) {
+        guard isInking else { return }
+        lastPointer = point
+        model.extendStroke(to: point)
+        refreshOverlays()
+    }
+
+    fileprivate func endStroke(at point: CGPoint) {
+        guard isInking else { return }
+        lastPointer = point
+        model.extendStroke(to: point)
+        model.endStroke()
+        isInking = false
         refreshOverlays()
         updateCursor(at: point)
     }
@@ -159,6 +197,9 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
         doubleClickStart = nil
         model.endDrag(at: point)
         isDragging = false
+        if !model.isLocked {
+            isPenEnabled = false
+        }
         if shouldConfirm, model.confirmableRect?.contains(point) == true {
             confirmSelection()
             return
@@ -169,7 +210,10 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
 
     fileprivate func resetSelection(at point: CGPoint) {
         isDragging = false
+        isInking = false
+        isPenEnabled = false
         doubleClickStart = nil
+        lastPointer = point
         model.reset()
         model.updateHover(at: point)
         refreshOverlays()
@@ -178,18 +222,63 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
 
     @objc fileprivate func confirmSelection() {
         guard let rectangle = model.confirmableRect else { return }
-        finish(with: rectangle)
+        model.endStroke()
+        isInking = false
+        finish(with: ScreenshotSelectionResult(region: rectangle, strokes: model.strokes))
     }
 
     @objc fileprivate func cancelSelection() {
         finish(with: nil)
     }
 
+    @objc fileprivate func togglePenMode() {
+        guard model.isLocked else {
+            isPenEnabled = false
+            refreshOverlays()
+            return
+        }
+        if isInking {
+            model.endStroke()
+            isInking = false
+        }
+        isPenEnabled.toggle()
+        refreshOverlays()
+        if let lastPointer {
+            updateCursor(at: lastPointer)
+        } else if isPenEnabled {
+            NSCursor.crosshair.set()
+        }
+        focusCaptureSurface()
+    }
+
+    @objc fileprivate func undoInk() {
+        model.undoStroke()
+        isInking = false
+        refreshOverlays()
+        if let lastPointer {
+            updateCursor(at: lastPointer)
+        }
+        focusCaptureSurface()
+    }
+
+    fileprivate func exitPenMode() {
+        guard isPenEnabled || isInking else { return }
+        if isInking {
+            model.endStroke()
+            isInking = false
+        }
+        isPenEnabled = false
+        refreshOverlays()
+        if let lastPointer {
+            updateCursor(at: lastPointer)
+        }
+    }
+
     public func windowWillClose(_ notification: Notification) {
         finish(with: nil)
     }
 
-    private func finish(with rectangle: CGRect?, session: UUID? = nil) {
+    private func finish(with result: ScreenshotSelectionResult?, session: UUID? = nil) {
         guard let activeSession, session == nil || session == activeSession else { return }
         self.activeSession = nil
         let pending = continuation
@@ -209,7 +298,10 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
         }
         self.previousApplication = nil
         isDragging = false
+        isInking = false
+        isPenEnabled = false
         doubleClickStart = nil
+        lastPointer = nil
         let windows = overlayWindows
         overlayWindows.removeAll()
         overlayViews.removeAll()
@@ -220,7 +312,13 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
             window.close()
         }
         NSCursor.arrow.set()
-        pending?.resume(returning: rectangle)
+        pending?.resume(returning: result)
+    }
+
+    private func focusCaptureSurface() {
+        let index = overlayWindows.firstIndex(where: { $0.isKeyWindow }) ?? 0
+        guard overlayWindows.indices.contains(index) else { return }
+        overlayWindows[index].makeFirstResponder(overlayViews[index])
     }
 
     private func refreshOverlays() {
@@ -231,6 +329,10 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
     }
 
     private func updateCursor(at point: CGPoint) {
+        if isPenEnabled {
+            NSCursor.crosshair.set()
+            return
+        }
         guard model.isLocked else {
             NSCursor.crosshair.set()
             return
@@ -266,6 +368,8 @@ private final class ScreenshotSelectionView: NSView {
     private let hintLabel = NSTextField(labelWithString: "移动鼠标选窗口 · 拖动框选 · Esc 取消")
     private let confirmButton: NSButton
     private let cancelButton: NSButton
+    private let penButton: NSButton
+    private let undoButton: NSButton
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -277,6 +381,8 @@ private final class ScreenshotSelectionView: NSView {
         self.controller = controller
         self.confirmButton = NSButton(title: "完成", target: controller, action: #selector(ScreenshotSelectionController.confirmSelection))
         self.cancelButton = NSButton(title: "取消", target: controller, action: #selector(ScreenshotSelectionController.cancelSelection))
+        self.penButton = NSButton(title: "画笔", target: controller, action: #selector(ScreenshotSelectionController.togglePenMode))
+        self.undoButton = NSButton(title: "撤销", target: controller, action: #selector(ScreenshotSelectionController.undoInk))
         super.init(frame: CGRect(origin: .zero, size: snapshot.screenFrame.size))
         autoresizingMask = [.width, .height]
         controls.wantsLayer = true
@@ -293,7 +399,12 @@ private final class ScreenshotSelectionView: NSView {
             label.maximumNumberOfLines = 1
             controls.addSubview(label)
         }
-        for button in [cancelButton, confirmButton] {
+        penButton.setButtonType(.toggle)
+        penButton.toolTip = "圈出要标记的内容"
+        undoButton.toolTip = "撤销最后一笔"
+        penButton.refusesFirstResponder = true
+        undoButton.refusesFirstResponder = true
+        for button in [penButton, undoButton, cancelButton, confirmButton] {
             button.bezelStyle = .rounded
             button.font = .systemFont(ofSize: 13)
             controls.addSubview(button)
@@ -308,13 +419,21 @@ private final class ScreenshotSelectionView: NSView {
 
     override func layout() {
         super.layout()
-        let width = min(680, max(280, bounds.width - 32))
+        let width = min(760, max(280, bounds.width - 32))
         controls.frame = CGRect(x: (bounds.width - width) / 2, y: max(16, bounds.height - 88), width: width, height: 68)
         // The ordinary controls view is unflipped, unlike the screenshot view.
-        statusLabel.frame = CGRect(x: 16, y: 36, width: width - 200, height: 18)
-        hintLabel.frame = CGRect(x: 16, y: 14, width: width - 200, height: 18)
-        cancelButton.frame = CGRect(x: width - 172, y: 19, width: 72, height: 30)
-        confirmButton.frame = CGRect(x: width - 92, y: 19, width: 76, height: 30)
+        let buttons: [(NSButton, CGFloat)] = [
+            (confirmButton, 72), (cancelButton, 64), (undoButton, 58), (penButton, 58)
+        ]
+        var buttonX = width - 12
+        for (button, buttonWidth) in buttons {
+            buttonX -= buttonWidth
+            button.frame = CGRect(x: buttonX, y: 19, width: buttonWidth, height: 30)
+            buttonX -= 6
+        }
+        let labelWidth = max(40, buttonX - 16)
+        statusLabel.frame = CGRect(x: 16, y: 36, width: labelWidth, height: 18)
+        hintLabel.frame = CGRect(x: 16, y: 14, width: labelWidth, height: 18)
     }
 
     fileprivate func refreshControls() {
@@ -326,10 +445,23 @@ private final class ScreenshotSelectionView: NSView {
         } else {
             statusLabel.stringValue = "选择截图区域"
         }
-        hintLabel.stringValue = model.isLocked
-            ? "拖动移动 · 边角调整大小 · 双击或 Enter 完成 · 右键重选"
-            : "移动鼠标选窗口 · 拖动框选 · Esc 取消"
+        if controller.isPenEnabled {
+            hintLabel.stringValue = "拖动圈出重点 · ⌘Z 撤销 · Enter 完成 · Esc 退出画笔"
+        } else if model.isLocked {
+            hintLabel.stringValue = model.canUndoInk
+                ? "拖动调整 · ⌘Z 撤销标记 · 双击或 Enter 完成 · 右键重选"
+                : "拖动调整 · 点画笔标记 · 双击或 Enter 完成 · 右键重选"
+        } else {
+            hintLabel.stringValue = "移动鼠标选窗口 · 拖动框选 · Esc 取消"
+        }
         confirmButton.isEnabled = model.confirmableRect != nil
+        penButton.isEnabled = model.isLocked
+        penButton.state = controller.isPenEnabled ? .on : .off
+        penButton.contentTintColor = controller.isPenEnabled ? .systemRed : nil
+        undoButton.isEnabled = model.canUndoInk
+        // While the pen is active, Esc leaves the pen. The cancel button would
+        // otherwise consume Esc before the selection view sees it.
+        cancelButton.keyEquivalent = controller.isPenEnabled ? "" : "\u{1b}"
     }
 
     override func updateTrackingAreas() {
@@ -351,11 +483,12 @@ private final class ScreenshotSelectionView: NSView {
         mask.fill()
         guard let selection, !selection.isEmpty else { return }
 
+        drawInk(clippedTo: selection)
         NSColor.systemBlue.setStroke()
         let outline = NSBezierPath(rect: selection)
         outline.lineWidth = 2
         outline.stroke()
-        if controller.model.isLocked {
+        if controller.model.isLocked, !controller.isPenEnabled {
             for point in handlePoints(for: selection) {
                 let handle = NSBezierPath(roundedRect: CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8), xRadius: 1, yRadius: 1)
                 NSColor.white.setFill()
@@ -367,8 +500,72 @@ private final class ScreenshotSelectionView: NSView {
         }
     }
 
+    private func drawInk(clippedTo selection: CGRect) {
+        guard let controller, !controller.model.inkStrokes.isEmpty else { return }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: selection).setClip()
+        NSColor(
+            srgbRed: ScreenshotInkStyle.red,
+            green: ScreenshotInkStyle.green,
+            blue: ScreenshotInkStyle.blue,
+            alpha: 1
+        ).set()
+        for stroke in controller.model.inkStrokes {
+            draw(ScreenshotInkPath.elements(for: stroke.points.map { localPoint($0) }))
+        }
+    }
+
+    private func draw(_ elements: [ScreenshotInkElement]) {
+        let path = NSBezierPath()
+        path.lineWidth = ScreenshotInkStyle.lineWidth
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        var hasPath = false
+        var current = CGPoint.zero
+        for element in elements {
+            switch element {
+            case .dot(let center):
+                let radius = ScreenshotInkStyle.lineWidth / 2
+                NSBezierPath(ovalIn: CGRect(
+                    x: center.x - radius,
+                    y: center.y - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                )).fill()
+            case .move(let point):
+                path.move(to: point)
+                current = point
+                hasPath = true
+            case .line(let point):
+                path.line(to: point)
+                current = point
+            case .quad(let point, let control):
+                // Quadratic curves arrived on NSBezierPath in macOS 14. The cubic
+                // form below is the same curve and works on the supported OS.
+                let first = CGPoint(
+                    x: current.x + (control.x - current.x) * 2 / 3,
+                    y: current.y + (control.y - current.y) * 2 / 3
+                )
+                let second = CGPoint(
+                    x: point.x + (control.x - point.x) * 2 / 3,
+                    y: point.y + (control.y - point.y) * 2 / 3
+                )
+                path.curve(to: point, controlPoint1: first, controlPoint2: second)
+                current = point
+            }
+        }
+        if hasPath {
+            path.stroke()
+        }
+    }
+
     private func localRect(_ global: CGRect) -> CGRect {
         global.offsetBy(dx: -snapshot.frame.minX, dy: -snapshot.frame.minY)
+    }
+
+    private func localPoint(_ global: CGPoint) -> CGPoint {
+        CGPoint(x: global.x - snapshot.frame.minX, y: global.y - snapshot.frame.minY)
     }
 
     private func globalPoint(for event: NSEvent) -> CGPoint {
@@ -396,15 +593,30 @@ private final class ScreenshotSelectionView: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeKey()
         window?.makeFirstResponder(self)
-        controller?.beginDrag(at: globalPoint(for: event), clickCount: event.clickCount)
+        let point = globalPoint(for: event)
+        if controller?.isPenEnabled == true {
+            controller?.beginStroke(at: point)
+            return
+        }
+        controller?.beginDrag(at: point, clickCount: event.clickCount)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        controller?.drag(to: globalPoint(for: event))
+        let point = globalPoint(for: event)
+        if controller?.isInking == true {
+            controller?.extendStroke(to: point)
+            return
+        }
+        controller?.drag(to: point)
     }
 
     override func mouseUp(with event: NSEvent) {
-        controller?.endDrag(at: globalPoint(for: event))
+        let point = globalPoint(for: event)
+        if controller?.isInking == true {
+            controller?.endStroke(at: point)
+            return
+        }
+        controller?.endDrag(at: point)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -412,9 +624,20 @@ private final class ScreenshotSelectionView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.shift),
+           event.charactersIgnoringModifiers?.caseInsensitiveCompare("z") == .orderedSame {
+            controller?.undoInk()
+            return
+        }
         switch event.keyCode {
         case 36, 76: controller?.confirmSelection()
-        case 53: controller?.cancelSelection()
+        case 53:
+            if controller?.isPenEnabled == true {
+                controller?.exitPenMode()
+            } else {
+                controller?.cancelSelection()
+            }
         default: super.keyDown(with: event)
         }
     }

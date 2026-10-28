@@ -7,14 +7,14 @@ private final class ScreenshotUIRunState: @unchecked Sendable {
     var finished = false
     var cleanedUp = false
     var spaceChangeCount = 0
-    var selectionTask: Task<CGRect?, Never>?
+    var selectionTask: Task<ScreenshotSelectionResult?, Never>?
 }
 
 extension LocalClipTestRunner {
     /// Explicit local verification only; never included in the default test run.
     static func runScreenshotSelectionUITests() {
         let state = ScreenshotUIRunState()
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(8)
         let task = Task { @MainActor in
             let previousApp = NSWorkspace.shared.frontmostApplication
             let workspaceNotifications = NSWorkspace.shared.notificationCenter
@@ -88,6 +88,20 @@ extension LocalClipTestRunner {
                 NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: 320 - y), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                    windowNumber: (targetWindow ?? window).windowNumber, context: nil, eventNumber: 1, clickCount: clicks, pressure: 1)!
             }
+            @MainActor func clickButton(_ title: String, in root: NSView) {
+                func find(_ view: NSView) -> NSButton? {
+                    if let button = view as? NSButton, button.title == title { return button }
+                    for subview in view.subviews {
+                        if let found = find(subview) { return found }
+                    }
+                    return nil
+                }
+                guard let button = find(root), button.isEnabled else {
+                    expect(false, "UI finds enabled \(title) button")
+                    return
+                }
+                button.performClick(nil)
+            }
             @MainActor func labels(_ view: NSView) -> [String] {
                 (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap { labels($0) }
             }
@@ -126,9 +140,35 @@ extension LocalClipTestRunner {
             view.mouseDragged(with: mouse(.leftMouseDragged, 120, 115))
             view.mouseUp(with: mouse(.leftMouseUp, 120, 115, clicks: 2))
             expect(window.isVisible, "UI second-click interior drag moves without confirming")
+            clickButton("画笔", in: view)
+            expect(labels(view).contains(where: { $0.contains("退出画笔") }), "UI pen mode explains how to leave it")
+            view.mouseDown(with: mouse(.leftMouseDown, 100, 120))
+            view.mouseDragged(with: mouse(.leftMouseDragged, 200, 120))
+            view.mouseUp(with: mouse(.leftMouseUp, 200, 120))
+            if let rep = bitmap() {
+                let scaleX = CGFloat(rep.pixelsWide) / 480
+                let scaleY = CGFloat(rep.pixelsHigh) / 320
+                func marked(_ x: CGFloat, _ y: CGFloat) -> Bool {
+                    guard let color = rep.colorAt(x: Int(x * scaleX), y: Int(y * scaleY))?.usingColorSpace(.deviceRGB) else { return false }
+                    return color.redComponent > 0.55
+                        && color.redComponent > color.greenComponent
+                        && color.redComponent > color.blueComponent
+                }
+                var found = false
+                for y in [CGFloat(119), 120, 121] {
+                    for x in stride(from: CGFloat(140), through: 170, by: 2) where marked(x, y) {
+                        found = true
+                    }
+                }
+                expect(found, "UI pen stroke is visible on the frozen selection")
+            } else { expect(false, "UI pen stroke renders bitmap") }
             window.sendEvent(screenshotUIKey(36, "\r", window: window))
             let selection = await state.selectionTask?.value
-            expect(selection == CGRect(x: 60, y: 55, width: 300, height: 160), "UI move and Enter return adjusted Quartz rectangle")
+            expect(selection?.region == CGRect(x: 60, y: 55, width: 300, height: 160), "UI move and Enter return adjusted Quartz rectangle")
+            expect(selection?.strokes.count == 1
+                   && selection?.strokes.first?.points.first == CGPoint(x: 100, y: 120)
+                   && selection?.strokes.first?.points.last == CGPoint(x: 200, y: 120),
+                   "UI pen stroke is returned in Quartz coordinates")
             verifyClosed(window, "UI confirmation closes overlay")
 
             guard !Task.isCancelled, let doubleWindow = await startSession(), let doubleView = doubleWindow.contentView else { return }
@@ -138,8 +178,26 @@ extension LocalClipTestRunner {
             doubleView.mouseDown(with: mouse(.leftMouseDown, 80, 80, clicks: 2, targetWindow: doubleWindow))
             expect(doubleWindow.isVisible, "UI double-click confirmation waits for mouse release")
             doubleView.mouseUp(with: mouse(.leftMouseUp, 80, 80, clicks: 2, targetWindow: doubleWindow))
-            expect(await state.selectionTask?.value == candidate.frame, "UI double-click release confirms selected window")
+            let doubleSelection = await state.selectionTask?.value
+            expect(doubleSelection?.region == candidate.frame && doubleSelection?.strokes.isEmpty == true,
+                   "UI double-click release confirms selected window")
             verifyClosed(doubleWindow, "UI double-click confirmation closes overlay")
+
+            guard !Task.isCancelled, let penWindow = await startSession(), let penView = penWindow.contentView else { return }
+            penView.mouseMoved(with: mouse(.mouseMoved, 80, 80, targetWindow: penWindow))
+            penView.mouseDown(with: mouse(.leftMouseDown, 80, 80, targetWindow: penWindow))
+            penView.mouseUp(with: mouse(.leftMouseUp, 80, 80, targetWindow: penWindow))
+            clickButton("画笔", in: penView)
+            penView.mouseDown(with: mouse(.leftMouseDown, 100, 100, clicks: 2, targetWindow: penWindow))
+            penView.mouseUp(with: mouse(.leftMouseUp, 100, 100, clicks: 2, targetWindow: penWindow))
+            expect(penWindow.isVisible, "UI double-click with the pen on draws a mark instead of finishing")
+            penWindow.sendEvent(screenshotUIKey(53, "\u{1b}", window: penWindow))
+            expect(penWindow.isVisible && !labels(penView).contains(where: { $0.contains("退出画笔") }),
+                   "UI Escape exits the pen and leaves the overlay open")
+            expect(labels(penView).contains(where: { $0.contains("已选择") }), "UI Escape from the pen keeps the locked selection")
+            penWindow.sendEvent(screenshotUIKey(53, "\u{1b}", window: penWindow))
+            expect(await state.selectionTask?.value == nil, "UI second Escape cancels after leaving pen mode")
+            verifyClosed(penWindow, "UI second Escape closes overlay")
 
             guard !Task.isCancelled, let escapeWindow = await startSession() else { return }
             escapeWindow.sendEvent(screenshotUIKey(53, "\u{1b}", window: escapeWindow))
@@ -166,7 +224,7 @@ extension LocalClipTestRunner {
         while !state.finished, Date() < deadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
-        if !state.finished { expect(false, "UI integration completes within five seconds") }
+        if !state.finished { expect(false, "UI integration completes within eight seconds") }
         task.cancel()
         state.selectionTask?.cancel()
         let cleanup = Task { @MainActor in

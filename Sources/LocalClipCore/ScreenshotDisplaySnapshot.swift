@@ -18,11 +18,13 @@ public struct ScreenshotDisplaySnapshot: @unchecked Sendable {
 }
 
 public enum ScreenshotSnapshotRenderer {
-    /// Crop the frozen content, never the selection overlay. Mixed-scale
-    /// displays are composed at the highest participating pixel density.
+    /// Crop the frozen content, never the selection overlay, then paint pen
+    /// strokes. Mixed-scale displays are composed at the highest participating
+    /// pixel density. Stroke points use the same Quartz coordinates as the region.
     public static func pngData(
         for requestedRegion: CGRect,
-        snapshots: [ScreenshotDisplaySnapshot]
+        snapshots: [ScreenshotDisplaySnapshot],
+        strokes: [ScreenshotInkStroke] = []
     ) -> Data? {
         guard requestedRegion.width > 0, requestedRegion.height > 0,
               requestedRegion.minX.isFinite, requestedRegion.minY.isFinite,
@@ -86,6 +88,9 @@ public enum ScreenshotSnapshotRenderer {
             )
             context.draw(cropped, in: destination)
         }
+        if !strokes.isEmpty {
+            draw(strokes, in: context, region: region, scale: scale)
+        }
 
         guard let image = context.makeImage() else { return nil }
         let output = NSMutableData()
@@ -99,5 +104,57 @@ public enum ScreenshotSnapshotRenderer {
         CGImageDestinationAddImage(destination, image, properties)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return output as Data
+    }
+
+    /// Quartz y grows downward; the bitmap context's y grows upward.
+    private static func draw(
+        _ strokes: [ScreenshotInkStroke],
+        in context: CGContext,
+        region: CGRect,
+        scale: CGFloat
+    ) {
+        guard scale > 0, scale.isFinite,
+              let color = CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: [
+                ScreenshotInkStyle.red, ScreenshotInkStyle.green, ScreenshotInkStyle.blue, 1
+              ]) else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setStrokeColor(color)
+        context.setFillColor(color)
+        context.setLineWidth(ScreenshotInkStyle.lineWidth * scale)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        let radius = ScreenshotInkStyle.lineWidth * scale / 2
+        for stroke in strokes {
+            let points = stroke.points.map { point in
+                CGPoint(
+                    x: (point.x - region.minX) * scale,
+                    y: (region.maxY - point.y) * scale
+                )
+            }
+            var hasPath = false
+            for element in ScreenshotInkPath.elements(for: points) {
+                switch element {
+                case .dot(let center):
+                    context.fillEllipse(in: CGRect(
+                        x: center.x - radius,
+                        y: center.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    ))
+                case .move(let point):
+                    context.beginPath()
+                    context.move(to: point)
+                    hasPath = true
+                case .line(let point):
+                    context.addLine(to: point)
+                case .quad(let point, let control):
+                    context.addQuadCurve(to: point, control: control)
+                }
+            }
+            if hasPath {
+                context.strokePath()
+            }
+        }
     }
 }
