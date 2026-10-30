@@ -19,12 +19,13 @@ public struct ScreenshotDisplaySnapshot: @unchecked Sendable {
 
 public enum ScreenshotSnapshotRenderer {
     /// Crop the frozen content, never the selection overlay, then paint pen
-    /// strokes. Mixed-scale displays are composed at the highest participating
-    /// pixel density. Stroke points use the same Quartz coordinates as the region.
+    /// strokes and hollow rectangles. Mixed-scale displays are composed at the
+    /// highest participating pixel density. Mark geometry uses the same Quartz
+    /// coordinates as the region.
     public static func pngData(
         for requestedRegion: CGRect,
         snapshots: [ScreenshotDisplaySnapshot],
-        strokes: [ScreenshotInkStroke] = []
+        marks: [ScreenshotMark] = []
     ) -> Data? {
         guard requestedRegion.width > 0, requestedRegion.height > 0,
               requestedRegion.minX.isFinite, requestedRegion.minY.isFinite,
@@ -88,8 +89,8 @@ public enum ScreenshotSnapshotRenderer {
             )
             context.draw(cropped, in: destination)
         }
-        if !strokes.isEmpty {
-            draw(strokes, in: context, region: region, scale: scale)
+        if !marks.isEmpty {
+            draw(marks, in: context, region: region, scale: scale)
         }
 
         guard let image = context.makeImage() else { return nil }
@@ -108,7 +109,7 @@ public enum ScreenshotSnapshotRenderer {
 
     /// Quartz y grows downward; the bitmap context's y grows upward.
     private static func draw(
-        _ strokes: [ScreenshotInkStroke],
+        _ marks: [ScreenshotMark],
         in context: CGContext,
         region: CGRect,
         scale: CGFloat
@@ -121,40 +122,59 @@ public enum ScreenshotSnapshotRenderer {
         defer { context.restoreGState() }
         context.setStrokeColor(color)
         context.setFillColor(color)
-        context.setLineWidth(ScreenshotInkStyle.lineWidth * scale)
-        context.setLineCap(.round)
-        context.setLineJoin(.round)
         let radius = ScreenshotInkStyle.lineWidth * scale / 2
-        for stroke in strokes {
-            let points = stroke.points.map { point in
-                CGPoint(
-                    x: (point.x - region.minX) * scale,
-                    y: (region.maxY - point.y) * scale
-                )
-            }
-            var hasPath = false
-            for element in ScreenshotInkPath.elements(for: points) {
-                switch element {
-                case .dot(let center):
-                    context.fillEllipse(in: CGRect(
-                        x: center.x - radius,
-                        y: center.y - radius,
-                        width: radius * 2,
-                        height: radius * 2
-                    ))
-                case .move(let point):
-                    context.beginPath()
-                    context.move(to: point)
-                    hasPath = true
-                case .line(let point):
-                    context.addLine(to: point)
-                case .quad(let point, let control):
-                    context.addQuadCurve(to: point, control: control)
+        for mark in marks {
+            switch mark {
+            case .pen(let stroke):
+                context.setLineWidth(ScreenshotInkStyle.lineWidth * scale)
+                context.setLineCap(.round)
+                context.setLineJoin(.round)
+                let points = stroke.points.map { map($0, region: region, scale: scale) }
+                var hasPath = false
+                for element in ScreenshotInkPath.elements(for: points) {
+                    switch element {
+                    case .dot(let center):
+                        context.fillEllipse(in: CGRect(
+                            x: center.x - radius,
+                            y: center.y - radius,
+                            width: radius * 2,
+                            height: radius * 2
+                        ))
+                    case .move(let point):
+                        context.beginPath()
+                        context.move(to: point)
+                        hasPath = true
+                    case .line(let point):
+                        context.addLine(to: point)
+                    case .quad(let point, let control):
+                        context.addQuadCurve(to: point, control: control)
+                    }
                 }
-            }
-            if hasPath {
-                context.strokePath()
+                if hasPath {
+                    context.strokePath()
+                }
+            case .rectangle(let rect):
+                let topLeft = map(CGPoint(x: rect.minX, y: rect.minY), region: region, scale: scale)
+                let bottomRight = map(CGPoint(x: rect.maxX, y: rect.maxY), region: region, scale: scale)
+                let box = CGRect(
+                    x: min(topLeft.x, bottomRight.x),
+                    y: min(topLeft.y, bottomRight.y),
+                    width: abs(topLeft.x - bottomRight.x),
+                    height: abs(topLeft.y - bottomRight.y)
+                )
+                guard box.width > 0, box.height > 0 else { continue }
+                context.setLineWidth(ScreenshotInkStyle.lineWidth * scale)
+                context.setLineCap(.butt)
+                context.setLineJoin(.miter)
+                context.stroke(box)
             }
         }
+    }
+
+    private static func map(_ point: CGPoint, region: CGRect, scale: CGFloat) -> CGPoint {
+        CGPoint(
+            x: (point.x - region.minX) * scale,
+            y: (region.maxY - point.y) * scale
+        )
     }
 }

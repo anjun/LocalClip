@@ -20,7 +20,7 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
     private var doubleClickStart: CGPoint?
     private var lastPointer: CGPoint?
     fileprivate var isDragging = false
-    fileprivate var isPenEnabled = false
+    fileprivate var markupTool: ScreenshotMarkupTool = .none
     fileprivate var isInking = false
 
     public init(snapshots: [ScreenshotDisplaySnapshot], windows: [ScreenshotWindowCandidate]) {
@@ -57,7 +57,7 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
         model.reset()
         isDragging = false
         isInking = false
-        isPenEnabled = false
+        markupTool = .none
         doubleClickStart = nil
         lastPointer = nil
         let session = activeSession
@@ -141,14 +141,44 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
     }
 
     fileprivate func beginStroke(at point: CGPoint) {
-        guard isPenEnabled else { return }
+        guard markupTool == .pen else { return }
         lastPointer = point
         if model.beginStroke(at: point) {
             isInking = true
         } else {
-            model.endStroke()
+            model.endActiveMark()
             isInking = false
         }
+        refreshOverlays()
+        updateCursor(at: point)
+    }
+
+    fileprivate func beginRectangle(at point: CGPoint) {
+        guard markupTool == .rectangle else { return }
+        lastPointer = point
+        if model.beginRectangle(at: point) {
+            isInking = true
+        } else {
+            model.endActiveMark()
+            isInking = false
+        }
+        refreshOverlays()
+        updateCursor(at: point)
+    }
+
+    fileprivate func extendRectangle(to point: CGPoint) {
+        guard isInking, markupTool == .rectangle else { return }
+        lastPointer = point
+        model.extendRectangle(to: point)
+        refreshOverlays()
+    }
+
+    fileprivate func endRectangle(at point: CGPoint) {
+        guard isInking, markupTool == .rectangle else { return }
+        lastPointer = point
+        model.extendRectangle(to: point)
+        model.endRectangle()
+        isInking = false
         refreshOverlays()
         updateCursor(at: point)
     }
@@ -198,7 +228,7 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
         model.endDrag(at: point)
         isDragging = false
         if !model.isLocked {
-            isPenEnabled = false
+            markupTool = .none
         }
         if shouldConfirm, model.confirmableRect?.contains(point) == true {
             confirmSelection()
@@ -211,7 +241,7 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
     fileprivate func resetSelection(at point: CGPoint) {
         isDragging = false
         isInking = false
-        isPenEnabled = false
+        markupTool = .none
         doubleClickStart = nil
         lastPointer = point
         model.reset()
@@ -222,37 +252,45 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
 
     @objc fileprivate func confirmSelection() {
         guard let rectangle = model.confirmableRect else { return }
-        model.endStroke()
+        model.endActiveMark()
         isInking = false
-        finish(with: ScreenshotSelectionResult(region: rectangle, strokes: model.strokes))
+        finish(with: ScreenshotSelectionResult(region: rectangle, marks: model.marks))
     }
 
     @objc fileprivate func cancelSelection() {
         finish(with: nil)
     }
 
-    @objc fileprivate func togglePenMode() {
+    @objc fileprivate func selectRectangleTool() {
+        selectMarkupTool(.rectangle)
+    }
+
+    @objc fileprivate func selectPenTool() {
+        selectMarkupTool(.pen)
+    }
+
+    private func selectMarkupTool(_ tool: ScreenshotMarkupTool) {
         guard model.isLocked else {
-            isPenEnabled = false
+            markupTool = .none
             refreshOverlays()
             return
         }
         if isInking {
-            model.endStroke()
+            model.endActiveMark()
             isInking = false
         }
-        isPenEnabled.toggle()
+        markupTool = markupTool == tool ? .none : tool
         refreshOverlays()
         if let lastPointer {
             updateCursor(at: lastPointer)
-        } else if isPenEnabled {
+        } else if markupTool != .none {
             NSCursor.crosshair.set()
         }
         focusCaptureSurface()
     }
 
     @objc fileprivate func undoInk() {
-        model.undoStroke()
+        model.undoMark()
         isInking = false
         refreshOverlays()
         if let lastPointer {
@@ -261,13 +299,13 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
         focusCaptureSurface()
     }
 
-    fileprivate func exitPenMode() {
-        guard isPenEnabled || isInking else { return }
+    fileprivate func exitMarkupTool() {
+        guard markupTool != .none || isInking else { return }
         if isInking {
-            model.endStroke()
+            model.endActiveMark()
             isInking = false
         }
-        isPenEnabled = false
+        markupTool = .none
         refreshOverlays()
         if let lastPointer {
             updateCursor(at: lastPointer)
@@ -299,7 +337,7 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
         self.previousApplication = nil
         isDragging = false
         isInking = false
-        isPenEnabled = false
+        markupTool = .none
         doubleClickStart = nil
         lastPointer = nil
         let windows = overlayWindows
@@ -323,13 +361,12 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
 
     private func refreshOverlays() {
         for view in overlayViews {
-            view.refreshControls()
-            view.needsDisplay = true
+            view.invalidateOverlay()
         }
     }
 
     private func updateCursor(at point: CGPoint) {
-        if isPenEnabled {
+        if markupTool != .none {
             NSCursor.crosshair.set()
             return
         }
@@ -351,6 +388,12 @@ public final class ScreenshotSelectionController: NSObject, NSWindowDelegate {
     }
 }
 
+fileprivate enum ScreenshotMarkupTool: Equatable {
+    case none
+    case pen
+    case rectangle
+}
+
 @MainActor
 private final class ScreenshotSelectionWindow: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -363,13 +406,21 @@ private final class ScreenshotSelectionView: NSView {
     private let backgroundImage: NSImage
     private weak var controller: ScreenshotSelectionController?
     private var pointerTracking: NSTrackingArea?
-    private let controls = NSView()
-    private let statusLabel = NSTextField(labelWithString: "选择截图区域")
-    private let hintLabel = NSTextField(labelWithString: "移动鼠标选窗口 · 拖动框选 · Esc 取消")
-    private let confirmButton: NSButton
-    private let cancelButton: NSButton
+    private let toolbar = NSView()
+    private let sizeChip = NSView()
+    private let sizeLabel = NSTextField(labelWithString: "")
+    private let divider = NSView()
+    private let rectangleButton: NSButton
     private let penButton: NSButton
     private let undoButton: NSButton
+    private let cancelButton: NSButton
+    private let confirmButton: NSButton
+    private let toolbarWidth: CGFloat = 195
+    private let toolbarHeight: CGFloat = 40
+    private var paintedOverlay: CGRect = .null
+    private var didPaintFullFrame = false
+    private var chromeToken = ""
+    private var dragMonitor: Any?
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -379,89 +430,219 @@ private final class ScreenshotSelectionView: NSView {
         self.snapshot = snapshot
         self.backgroundImage = NSImage(cgImage: snapshot.image, size: snapshot.frame.size)
         self.controller = controller
-        self.confirmButton = NSButton(title: "完成", target: controller, action: #selector(ScreenshotSelectionController.confirmSelection))
-        self.cancelButton = NSButton(title: "取消", target: controller, action: #selector(ScreenshotSelectionController.cancelSelection))
-        self.penButton = NSButton(title: "画笔", target: controller, action: #selector(ScreenshotSelectionController.togglePenMode))
-        self.undoButton = NSButton(title: "撤销", target: controller, action: #selector(ScreenshotSelectionController.undoInk))
+        self.rectangleButton = Self.iconButton(
+            symbol: "rectangle", label: "方框",
+            action: #selector(ScreenshotSelectionController.selectRectangleTool), target: controller
+        )
+        self.penButton = Self.iconButton(
+            symbol: "pencil.tip", label: "画笔",
+            action: #selector(ScreenshotSelectionController.selectPenTool), target: controller
+        )
+        self.undoButton = Self.iconButton(
+            symbol: "arrow.uturn.backward", label: "撤销",
+            action: #selector(ScreenshotSelectionController.undoInk), target: controller
+        )
+        self.cancelButton = Self.iconButton(
+            symbol: "xmark", label: "取消",
+            action: #selector(ScreenshotSelectionController.cancelSelection), target: controller
+        )
+        self.confirmButton = Self.iconButton(
+            symbol: "checkmark", label: "完成",
+            action: #selector(ScreenshotSelectionController.confirmSelection), target: controller
+        )
         super.init(frame: CGRect(origin: .zero, size: snapshot.screenFrame.size))
         autoresizingMask = [.width, .height]
-        controls.wantsLayer = true
-        controls.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.96).cgColor
-        controls.layer?.cornerRadius = 10
-        controls.layer?.borderWidth = 1
-        controls.layer?.borderColor = NSColor(white: 1, alpha: 0.2).cgColor
-        statusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        statusLabel.textColor = .white
-        hintLabel.font = .systemFont(ofSize: 11)
-        hintLabel.textColor = NSColor(white: 0.85, alpha: 1)
-        for label in [statusLabel, hintLabel] {
-            label.lineBreakMode = .byTruncatingTail
-            label.maximumNumberOfLines = 1
-            controls.addSubview(label)
+        toolbar.wantsLayer = true
+        toolbar.layer?.backgroundColor = NSColor(white: 0.13, alpha: 0.96).cgColor
+        toolbar.layer?.cornerRadius = 10
+        toolbar.layer?.borderWidth = 1
+        toolbar.layer?.borderColor = NSColor(white: 1, alpha: 0.14).cgColor
+        toolbar.appearance = NSAppearance(named: .darkAqua)
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor(white: 1, alpha: 0.22).cgColor
+        let buttons = [rectangleButton, penButton, undoButton, cancelButton, confirmButton]
+        for button in buttons {
+            toolbar.addSubview(button)
         }
-        penButton.setButtonType(.toggle)
-        penButton.toolTip = "圈出要标记的内容"
-        undoButton.toolTip = "撤销最后一笔"
-        penButton.refusesFirstResponder = true
-        undoButton.refusesFirstResponder = true
-        for button in [penButton, undoButton, cancelButton, confirmButton] {
-            button.bezelStyle = .rounded
-            button.font = .systemFont(ofSize: 13)
-            controls.addSubview(button)
-        }
+        toolbar.addSubview(divider)
         confirmButton.keyEquivalent = "\r"
         cancelButton.keyEquivalent = "\u{1b}"
-        controls.appearance = NSAppearance(named: .darkAqua)
-        addSubview(controls)
+        // Toolbar coordinates stay unflipped; only its frame is placed in the flipped screenshot view.
+        let buttonY: CGFloat = 4
+        rectangleButton.frame = CGRect(x: 6, y: buttonY, width: 32, height: 32)
+        penButton.frame = CGRect(x: 40, y: buttonY, width: 32, height: 32)
+        divider.frame = CGRect(x: 80, y: 12, width: 1, height: 16)
+        undoButton.frame = CGRect(x: 89, y: buttonY, width: 32, height: 32)
+        cancelButton.frame = CGRect(x: 123, y: buttonY, width: 32, height: 32)
+        confirmButton.frame = CGRect(x: 157, y: buttonY, width: 32, height: 32)
+        toolbar.isHidden = true
+        addSubview(toolbar)
+
+        sizeChip.wantsLayer = true
+        sizeChip.layer?.backgroundColor = NSColor(white: 0.13, alpha: 0.96).cgColor
+        sizeChip.layer?.cornerRadius = 6
+        sizeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        sizeLabel.textColor = .white
+        sizeLabel.alignment = .center
+        sizeLabel.lineBreakMode = .byClipping
+        sizeChip.addSubview(sizeLabel)
+        sizeChip.isHidden = true
+        addSubview(sizeChip)
+    }
+
+    private static func iconButton(symbol: String, label: String, action: Selector, target: AnyObject) -> NSButton {
+        let button = NSButton()
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?.withSymbolConfiguration(config)
+        button.contentTintColor = .white
+        button.target = target
+        button.action = action
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
+        button.refusesFirstResponder = true
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 7
+        return button
     }
 
     required init?(coder: NSCoder) { nil }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { endDragMonitor() }
+    }
+
     override func layout() {
         super.layout()
-        let width = min(760, max(280, bounds.width - 32))
-        controls.frame = CGRect(x: (bounds.width - width) / 2, y: max(16, bounds.height - 88), width: width, height: 68)
-        // The ordinary controls view is unflipped, unlike the screenshot view.
-        let buttons: [(NSButton, CGFloat)] = [
-            (confirmButton, 72), (cancelButton, 64), (undoButton, 58), (penButton, 58)
-        ]
-        var buttonX = width - 12
-        for (button, buttonWidth) in buttons {
-            buttonX -= buttonWidth
-            button.frame = CGRect(x: buttonX, y: 19, width: buttonWidth, height: 30)
-            buttonX -= 6
+        guard let controller, let selection = controller.model.selection else {
+            toolbar.isHidden = true
+            sizeChip.isHidden = true
+            return
         }
-        let labelWidth = max(40, buttonX - 16)
-        statusLabel.frame = CGRect(x: 16, y: 36, width: labelWidth, height: 18)
-        hintLabel.frame = CGRect(x: 16, y: 14, width: labelWidth, height: 18)
+        let local = localRect(selection)
+        let chipHeight: CGFloat = 22
+        let chipWidth: CGFloat = 92
+        sizeLabel.frame = CGRect(x: 0, y: 2, width: chipWidth, height: 18)
+        var chipX = local.minX
+        var chipY = local.minY - chipHeight - 6
+        if chipY < 8 { chipY = local.minY + 6 }
+        chipX = min(max(8, chipX), max(8, bounds.width - chipWidth - 8))
+        sizeChip.frame = CGRect(x: chipX, y: chipY, width: chipWidth, height: chipHeight)
+
+        var toolX = local.maxX - toolbarWidth
+        var toolY = local.maxY + 8
+        if toolY + toolbarHeight > bounds.height - 8 {
+            toolY = local.minY - toolbarHeight - 8
+        }
+        if toolY < 8 { toolY = 8 }
+        toolX = min(max(8, toolX), max(8, bounds.width - toolbarWidth - 8))
+        toolbar.frame = CGRect(x: toolX, y: toolY, width: toolbarWidth, height: toolbarHeight)
+        updateChromeVisibility()
     }
 
     fileprivate func refreshControls() {
         guard let controller else { return }
         let model = controller.model
-        if let selection = model.selection {
-            let dimensions = "\(Int(selection.width.rounded())) × \(Int(selection.height.rounded()))"
-            statusLabel.stringValue = model.isLocked ? "已选择 \(dimensions)" : "单击选中窗口  \(dimensions)"
-        } else {
-            statusLabel.stringValue = "选择截图区域"
-        }
-        if controller.isPenEnabled {
-            hintLabel.stringValue = "拖动圈出重点 · ⌘Z 撤销 · Enter 完成 · Esc 退出画笔"
-        } else if model.isLocked {
-            hintLabel.stringValue = model.canUndoInk
-                ? "拖动调整 · ⌘Z 撤销标记 · 双击或 Enter 完成 · 右键重选"
-                : "拖动调整 · 点画笔标记 · 双击或 Enter 完成 · 右键重选"
-        } else {
-            hintLabel.stringValue = "移动鼠标选窗口 · 拖动框选 · Esc 取消"
-        }
-        confirmButton.isEnabled = model.confirmableRect != nil
+        let ink = NSColor(
+            srgbRed: ScreenshotInkStyle.red,
+            green: ScreenshotInkStyle.green,
+            blue: ScreenshotInkStyle.blue,
+            alpha: 1
+        )
+        style(rectangleButton, selected: controller.markupTool == .rectangle, accent: ink)
+        style(penButton, selected: controller.markupTool == .pen, accent: ink)
+        rectangleButton.isEnabled = model.isLocked
         penButton.isEnabled = model.isLocked
-        penButton.state = controller.isPenEnabled ? .on : .off
-        penButton.contentTintColor = controller.isPenEnabled ? .systemRed : nil
+        confirmButton.isEnabled = model.confirmableRect != nil
         undoButton.isEnabled = model.canUndoInk
-        // While the pen is active, Esc leaves the pen. The cancel button would
-        // otherwise consume Esc before the selection view sees it.
-        cancelButton.keyEquivalent = controller.isPenEnabled ? "" : "\u{1b}"
+        confirmButton.contentTintColor = .white
+        cancelButton.contentTintColor = .white
+        // While a markup tool is active, Esc leaves that tool. The cancel button
+        // would otherwise consume Esc before the selection view sees it.
+        cancelButton.keyEquivalent = controller.markupTool == .none ? "\u{1b}" : ""
+        updateChromeVisibility()
+        // Relayout only when the chrome actually moves. A pen point must not
+        // slide the toolbar under the cursor and drop the drag.
+        let token = "\(model.selection?.debugDescription ?? "-")|\(model.isLocked)|\(controller.markupTool)|\(controller.isDragging)|\(controller.isInking)|\(sizeLabel.stringValue)"
+        if token != chromeToken {
+            chromeToken = token
+            needsLayout = true
+        }
+    }
+
+    fileprivate func invalidateOverlay() {
+        refreshControls()
+        let next = overlayDirtyRect()
+        let dirty = paintedOverlay.isNull ? next : paintedOverlay.union(next)
+        paintedOverlay = next
+        guard didPaintFullFrame else {
+            needsDisplay = true
+            return
+        }
+        guard !dirty.isNull, !dirty.isEmpty else { return }
+        setNeedsDisplay(dirty)
+    }
+
+    /// Hide the toolbar and size chip while the button is down. They follow the
+    /// selection, and a view sliding under the pointer can end the drag early.
+    private func updateChromeVisibility() {
+        guard let controller else { return }
+        let selection = controller.model.selection
+        if controller.isDragging || controller.isInking || selection == nil {
+            sizeChip.isHidden = true
+            toolbar.isHidden = true
+            if let selection {
+                sizeLabel.stringValue = "\(Int(selection.width.rounded())) × \(Int(selection.height.rounded()))"
+            } else {
+                sizeLabel.stringValue = ""
+            }
+            return
+        }
+        sizeLabel.stringValue = "\(Int(selection!.width.rounded())) × \(Int(selection!.height.rounded()))"
+        sizeChip.isHidden = !owns(selection!, atTopLeft: true)
+        toolbar.isHidden = !controller.model.isLocked || !owns(selection!, atTopLeft: false)
+    }
+
+    private func overlayDirtyRect() -> CGRect {
+        guard let controller else { return .null }
+        var rect = CGRect.null
+        if let selection = controller.model.selection {
+            rect = rect.union(localRect(selection).insetBy(dx: -12, dy: -12))
+        }
+        for mark in controller.model.visibleMarks {
+            switch mark {
+            case .pen(let stroke):
+                var box = CGRect.null
+                for point in stroke.points {
+                    box = box.union(CGRect(origin: localPoint(point), size: .zero))
+                }
+                if !box.isNull {
+                    rect = rect.union(box.insetBy(dx: -8, dy: -8))
+                }
+            case .rectangle(let frame):
+                rect = rect.union(localRect(frame).insetBy(dx: -8, dy: -8))
+            }
+        }
+        return rect
+    }
+
+    private func style(_ button: NSButton, selected: Bool, accent: NSColor) {
+        button.contentTintColor = selected ? accent : .white
+        button.layer?.backgroundColor = selected ? NSColor.white.withAlphaComponent(0.16).cgColor : NSColor.clear.cgColor
+    }
+
+    /// Top-left owns the size chip; bottom-right owns the toolbar, so a selection
+    /// that crosses displays does not draw two copies.
+    private func owns(_ selection: CGRect, atTopLeft: Bool) -> Bool {
+        let insetX = min(0.5, selection.width / 2)
+        let insetY = min(0.5, selection.height / 2)
+        let point = atTopLeft
+            ? CGPoint(x: selection.minX + insetX, y: selection.minY + insetY)
+            : CGPoint(x: selection.maxX - insetX, y: selection.maxY - insetY)
+        return snapshot.frame.contains(point)
     }
 
     override func updateTrackingAreas() {
@@ -473,6 +654,10 @@ private final class ScreenshotSelectionView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        let covered = dirtyRect.intersection(bounds)
+        if covered.width >= bounds.width - 1, covered.height >= bounds.height - 1 {
+            didPaintFullFrame = true
+        }
         backgroundImage.draw(in: bounds, from: .zero, operation: .copy, fraction: 1, respectFlipped: true, hints: nil)
         guard let controller else { return }
         let selection = controller.model.selection.map(localRect)
@@ -488,7 +673,7 @@ private final class ScreenshotSelectionView: NSView {
         let outline = NSBezierPath(rect: selection)
         outline.lineWidth = 2
         outline.stroke()
-        if controller.model.isLocked, !controller.isPenEnabled {
+        if controller.model.isLocked, controller.markupTool == .none {
             for point in handlePoints(for: selection) {
                 let handle = NSBezierPath(roundedRect: CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8), xRadius: 1, yRadius: 1)
                 NSColor.white.setFill()
@@ -501,18 +686,27 @@ private final class ScreenshotSelectionView: NSView {
     }
 
     private func drawInk(clippedTo selection: CGRect) {
-        guard let controller, !controller.model.inkStrokes.isEmpty else { return }
+        guard let controller, !controller.model.visibleMarks.isEmpty else { return }
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSBezierPath(rect: selection).setClip()
-        NSColor(
+        let color = NSColor(
             srgbRed: ScreenshotInkStyle.red,
             green: ScreenshotInkStyle.green,
             blue: ScreenshotInkStyle.blue,
             alpha: 1
-        ).set()
-        for stroke in controller.model.inkStrokes {
-            draw(ScreenshotInkPath.elements(for: stroke.points.map { localPoint($0) }))
+        )
+        color.set()
+        for mark in controller.model.visibleMarks {
+            switch mark {
+            case .pen(let stroke):
+                draw(ScreenshotInkPath.elements(for: stroke.points.map { localPoint($0) }))
+            case .rectangle(let rect):
+                let path = NSBezierPath(rect: localRect(rect))
+                path.lineWidth = ScreenshotInkStyle.lineWidth
+                path.lineJoinStyle = .miter
+                path.stroke()
+            }
         }
     }
 
@@ -569,8 +763,20 @@ private final class ScreenshotSelectionView: NSView {
     }
 
     private func globalPoint(for event: NSEvent) -> CGPoint {
+        // A drag that has entered another display's overlay reports that window's
+        // coordinates. Events delivered here, including tests, keep locationInWindow.
+        if let eventWindow = event.window, eventWindow !== window {
+            return globalPoint(fromScreen: eventWindow.convertPoint(toScreen: event.locationInWindow))
+        }
         let point = convert(event.locationInWindow, from: nil)
         return CGPoint(x: snapshot.frame.minX + point.x, y: snapshot.frame.minY + point.y)
+    }
+
+    private func globalPoint(fromScreen screenPoint: NSPoint) -> CGPoint {
+        CGPoint(
+            x: snapshot.frame.minX + (screenPoint.x - snapshot.screenFrame.minX),
+            y: snapshot.frame.minY + (snapshot.screenFrame.maxY - screenPoint.y)
+        )
     }
 
     private func handlePoints(for rect: CGRect) -> [CGPoint] {
@@ -593,30 +799,89 @@ private final class ScreenshotSelectionView: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeKey()
         window?.makeFirstResponder(self)
-        let point = globalPoint(for: event)
-        if controller?.isPenEnabled == true {
-            controller?.beginStroke(at: point)
-            return
-        }
-        controller?.beginDrag(at: point, clickCount: event.clickCount)
+        applyPress(at: globalPoint(for: event), clickCount: event.clickCount)
+        // Keep tracking after the pointer leaves this window. A nonactivating
+        // panel stops sending mouseDragged once the cursor crosses onto another
+        // display or off the overlay, which drops both resizing and pen strokes.
+        // Tests inject mouseDragged directly and do not hold the button.
+        guard Self.leftMouseIsDown else { return }
+        beginDragMonitor()
     }
 
     override func mouseDragged(with event: NSEvent) {
-        let point = globalPoint(for: event)
-        if controller?.isInking == true {
-            controller?.extendStroke(to: point)
-            return
-        }
-        controller?.drag(to: point)
+        applyDrag(at: globalPoint(for: event))
     }
 
     override func mouseUp(with event: NSEvent) {
-        let point = globalPoint(for: event)
-        if controller?.isInking == true {
-            controller?.endStroke(at: point)
+        applyRelease(at: globalPoint(for: event))
+        endDragMonitor()
+    }
+
+    private func applyPress(at point: CGPoint, clickCount: Int) {
+        switch controller?.markupTool {
+        case .pen:
+            controller?.beginStroke(at: point)
+        case .rectangle:
+            controller?.beginRectangle(at: point)
+        default:
+            controller?.beginDrag(at: point, clickCount: clickCount)
+        }
+    }
+
+    private func applyDrag(at point: CGPoint) {
+        guard controller?.isInking == true else {
+            controller?.drag(to: point)
             return
         }
-        controller?.endDrag(at: point)
+        if controller?.markupTool == .rectangle {
+            controller?.extendRectangle(to: point)
+        } else {
+            controller?.extendStroke(to: point)
+        }
+    }
+
+    private func applyRelease(at point: CGPoint) {
+        guard controller?.isInking == true else {
+            controller?.endDrag(at: point)
+            return
+        }
+        if controller?.markupTool == .rectangle {
+            controller?.endRectangle(at: point)
+        } else {
+            controller?.endStroke(at: point)
+        }
+    }
+
+    private func beginDragMonitor() {
+        endDragMonitor()
+        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            guard let self else { return event }
+            // Events still inside this window go through mouseDragged / mouseUp.
+            // Events that hit another overlay, or no window, would otherwise end the gesture.
+            guard event.window !== self.window else { return event }
+            let point = event.window == nil
+                ? self.globalPoint(fromScreen: NSEvent.mouseLocation)
+                : self.globalPoint(for: event)
+            if event.type == .leftMouseUp {
+                self.applyRelease(at: point)
+                self.endDragMonitor()
+                return nil
+            }
+            self.applyDrag(at: point)
+            self.window?.displayIfNeeded()
+            return nil
+        }
+    }
+
+    private func endDragMonitor() {
+        if let dragMonitor {
+            NSEvent.removeMonitor(dragMonitor)
+            self.dragMonitor = nil
+        }
+    }
+
+    private static var leftMouseIsDown: Bool {
+        NSEvent.pressedMouseButtons & 1 != 0
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -633,8 +898,8 @@ private final class ScreenshotSelectionView: NSView {
         switch event.keyCode {
         case 36, 76: controller?.confirmSelection()
         case 53:
-            if controller?.isPenEnabled == true {
-                controller?.exitPenMode()
+            if controller?.markupTool != ScreenshotMarkupTool.none {
+                controller?.exitMarkupTool()
             } else {
                 controller?.cancelSelection()
             }

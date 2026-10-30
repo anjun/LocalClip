@@ -88,19 +88,26 @@ extension LocalClipTestRunner {
                 NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: 320 - y), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                    windowNumber: (targetWindow ?? window).windowNumber, context: nil, eventNumber: 1, clickCount: clicks, pressure: 1)!
             }
-            @MainActor func clickButton(_ title: String, in root: NSView) {
-                func find(_ view: NSView) -> NSButton? {
-                    if let button = view as? NSButton, button.title == title { return button }
-                    for subview in view.subviews {
-                        if let found = find(subview) { return found }
-                    }
-                    return nil
+            @MainActor func findButton(_ title: String, in root: NSView) -> NSButton? {
+                if let button = root as? NSButton,
+                   button.title == title || button.toolTip == title || button.accessibilityLabel() == title {
+                    return button
                 }
-                guard let button = find(root), button.isEnabled else {
+                for subview in root.subviews {
+                    if let found = findButton(title, in: subview) { return found }
+                }
+                return nil
+            }
+            @MainActor func clickButton(_ title: String, in root: NSView) {
+                guard let button = findButton(title, in: root), button.isEnabled, button.superview?.isHidden == false else {
                     expect(false, "UI finds enabled \(title) button")
                     return
                 }
                 button.performClick(nil)
+            }
+            @MainActor func toolIsSelected(_ title: String, in root: NSView) -> Bool {
+                guard let color = findButton(title, in: root)?.contentTintColor?.usingColorSpace(.sRGB) else { return false }
+                return color.redComponent > 0.8 && color.greenComponent < 0.5
             }
             @MainActor func labels(_ view: NSView) -> [String] {
                 (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap { labels($0) }
@@ -112,10 +119,12 @@ extension LocalClipTestRunner {
                 return rep
             }
             view.mouseMoved(with: mouse(.mouseMoved, 80, 80))
-            expect(labels(view).contains(where: { $0.contains("单击选中窗口") && $0.contains("240 × 160") }), "UI hover previews candidate window")
+            expect(labels(view).contains("240 × 160"), "UI hover previews candidate window")
+            expect(findButton("方框", in: view)?.superview?.isHidden == true, "UI hides the markup toolbar before the selection is locked")
             view.mouseDown(with: mouse(.leftMouseDown, 80, 80))
             view.mouseUp(with: mouse(.leftMouseUp, 80, 80))
-            expect(labels(view).contains("已选择 240 × 160"), "UI click locks candidate selection")
+            expect(labels(view).contains("240 × 160") && findButton("方框", in: view)?.superview?.isHidden == false,
+                   "UI click locks candidate selection and shows the markup toolbar")
             if let rep = bitmap() {
                 let handles = [CGPoint(x: 40, y: 40), CGPoint(x: 160, y: 40), CGPoint(x: 280, y: 40), CGPoint(x: 280, y: 120),
                                CGPoint(x: 280, y: 200), CGPoint(x: 160, y: 200), CGPoint(x: 40, y: 200), CGPoint(x: 40, y: 120)]
@@ -128,7 +137,7 @@ extension LocalClipTestRunner {
             view.mouseDown(with: mouse(.leftMouseDown, 280, 120, clicks: 2))
             view.mouseDragged(with: mouse(.leftMouseDragged, 340, 120))
             view.mouseUp(with: mouse(.leftMouseUp, 340, 120, clicks: 2))
-            expect(window.isVisible && labels(view).contains("已选择 300 × 160"), "UI second-click edge drag resizes without confirming")
+            expect(window.isVisible && labels(view).contains("300 × 160"), "UI second-click edge drag resizes without confirming")
             do {
                 guard let png = bitmap()?.representation(using: .png, properties: [:]) else {
                     expect(false, "UI resized selection renders PNG"); return
@@ -140,8 +149,25 @@ extension LocalClipTestRunner {
             view.mouseDragged(with: mouse(.leftMouseDragged, 120, 115))
             view.mouseUp(with: mouse(.leftMouseUp, 120, 115, clicks: 2))
             expect(window.isVisible, "UI second-click interior drag moves without confirming")
+            clickButton("方框", in: view)
+            expect(toolIsSelected("方框", in: view), "UI rectangle tool shows as the active markup tool")
+            view.mouseDown(with: mouse(.leftMouseDown, 220, 80))
+            view.mouseDragged(with: mouse(.leftMouseDragged, 280, 140))
+            view.mouseUp(with: mouse(.leftMouseUp, 280, 140))
+            if let rep = bitmap() {
+                let scaleX = CGFloat(rep.pixelsWide) / 480
+                let scaleY = CGFloat(rep.pixelsHigh) / 320
+                func marked(_ x: CGFloat, _ y: CGFloat) -> Bool {
+                    guard let color = rep.colorAt(x: Int(x * scaleX), y: Int(y * scaleY))?.usingColorSpace(.deviceRGB) else { return false }
+                    return color.redComponent > 0.55
+                        && color.redComponent > color.greenComponent
+                        && color.redComponent > color.blueComponent
+                }
+                expect(marked(250, 80) || marked(250, 81) || marked(248, 80), "UI rectangle draws a red edge")
+                expect(!marked(250, 110), "UI rectangle does not fill its interior")
+            } else { expect(false, "UI rectangle renders bitmap") }
             clickButton("画笔", in: view)
-            expect(labels(view).contains(where: { $0.contains("退出画笔") }), "UI pen mode explains how to leave it")
+            expect(toolIsSelected("画笔", in: view) && !toolIsSelected("方框", in: view), "UI pen replaces the rectangle tool")
             view.mouseDown(with: mouse(.leftMouseDown, 100, 120))
             view.mouseDragged(with: mouse(.leftMouseDragged, 200, 120))
             view.mouseUp(with: mouse(.leftMouseUp, 200, 120))
@@ -165,10 +191,15 @@ extension LocalClipTestRunner {
             window.sendEvent(screenshotUIKey(36, "\r", window: window))
             let selection = await state.selectionTask?.value
             expect(selection?.region == CGRect(x: 60, y: 55, width: 300, height: 160), "UI move and Enter return adjusted Quartz rectangle")
-            expect(selection?.strokes.count == 1
-                   && selection?.strokes.first?.points.first == CGPoint(x: 100, y: 120)
-                   && selection?.strokes.first?.points.last == CGPoint(x: 200, y: 120),
-                   "UI pen stroke is returned in Quartz coordinates")
+            expect(selection?.marks.count == 2
+                   && selection?.marks.first == .rectangle(CGRect(x: 220, y: 80, width: 60, height: 60)),
+                   "UI rectangle is returned in Quartz coordinates")
+            if case .pen(let stroke) = selection?.marks.last {
+                expect(stroke.points.first == CGPoint(x: 100, y: 120) && stroke.points.last == CGPoint(x: 200, y: 120),
+                       "UI pen stroke is returned in Quartz coordinates")
+            } else {
+                expect(false, "UI pen stroke is returned in Quartz coordinates")
+            }
             verifyClosed(window, "UI confirmation closes overlay")
 
             guard !Task.isCancelled, let doubleWindow = await startSession(), let doubleView = doubleWindow.contentView else { return }
@@ -179,7 +210,7 @@ extension LocalClipTestRunner {
             expect(doubleWindow.isVisible, "UI double-click confirmation waits for mouse release")
             doubleView.mouseUp(with: mouse(.leftMouseUp, 80, 80, clicks: 2, targetWindow: doubleWindow))
             let doubleSelection = await state.selectionTask?.value
-            expect(doubleSelection?.region == candidate.frame && doubleSelection?.strokes.isEmpty == true,
+            expect(doubleSelection?.region == candidate.frame && doubleSelection?.marks.isEmpty == true,
                    "UI double-click release confirms selected window")
             verifyClosed(doubleWindow, "UI double-click confirmation closes overlay")
 
@@ -192,9 +223,9 @@ extension LocalClipTestRunner {
             penView.mouseUp(with: mouse(.leftMouseUp, 100, 100, clicks: 2, targetWindow: penWindow))
             expect(penWindow.isVisible, "UI double-click with the pen on draws a mark instead of finishing")
             penWindow.sendEvent(screenshotUIKey(53, "\u{1b}", window: penWindow))
-            expect(penWindow.isVisible && !labels(penView).contains(where: { $0.contains("退出画笔") }),
+            expect(penWindow.isVisible && !toolIsSelected("画笔", in: penView),
                    "UI Escape exits the pen and leaves the overlay open")
-            expect(labels(penView).contains(where: { $0.contains("已选择") }), "UI Escape from the pen keeps the locked selection")
+            expect(labels(penView).contains("240 × 160"), "UI Escape from the pen keeps the locked selection")
             penWindow.sendEvent(screenshotUIKey(53, "\u{1b}", window: penWindow))
             expect(await state.selectionTask?.value == nil, "UI second Escape cancels after leaving pen mode")
             verifyClosed(penWindow, "UI second Escape closes overlay")

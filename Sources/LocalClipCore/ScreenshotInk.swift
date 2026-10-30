@@ -10,14 +10,21 @@ public struct ScreenshotInkStroke: Equatable, Sendable {
     }
 }
 
-/// Region confirmed by the selection overlay, including any pen marks on it.
+/// One annotation on a locked screenshot selection, in Quartz global coordinates.
+public enum ScreenshotMark: Equatable, Sendable {
+    case pen(ScreenshotInkStroke)
+    /// A hollow rectangle. The stroke is centered on this frame.
+    case rectangle(CGRect)
+}
+
+/// Region confirmed by the selection overlay, including pen and rectangle marks.
 public struct ScreenshotSelectionResult: Equatable, Sendable {
     public let region: CGRect
-    public let strokes: [ScreenshotInkStroke]
+    public let marks: [ScreenshotMark]
 
-    public init(region: CGRect, strokes: [ScreenshotInkStroke]) {
+    public init(region: CGRect, marks: [ScreenshotMark]) {
         self.region = region
-        self.strokes = strokes
+        self.marks = marks
     }
 }
 

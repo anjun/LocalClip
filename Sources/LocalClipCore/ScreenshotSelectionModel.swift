@@ -17,21 +17,31 @@ public enum ScreenshotSelectionHandle: CaseIterable, Sendable {
     case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
 }
 
-/// Owns selection geometry and pen strokes independently of the capture overlay and AppKit.
+/// Owns selection geometry and annotations independently of the capture overlay and AppKit.
 public struct ScreenshotSelectionModel {
     public private(set) var selection: CGRect?
     public private(set) var isLocked = false
-    public private(set) var strokes: [ScreenshotInkStroke] = []
+    public private(set) var marks: [ScreenshotMark] = []
     private var activeStroke: [CGPoint] = []
+    private var activeRectangle: (start: CGPoint, end: CGPoint)?
 
     public var canUndoInk: Bool {
-        !strokes.isEmpty || !activeStroke.isEmpty
+        !marks.isEmpty || !activeStroke.isEmpty || activeRectangle != nil
     }
 
-    /// Committed strokes plus the one currently being drawn.
-    public var inkStrokes: [ScreenshotInkStroke] {
-        guard !activeStroke.isEmpty else { return strokes }
-        return strokes + [ScreenshotInkStroke(points: activeStroke)]
+    /// Committed marks plus the pen stroke or rectangle currently being drawn.
+    public var visibleMarks: [ScreenshotMark] {
+        var visible = marks
+        if !activeStroke.isEmpty {
+            visible.append(.pen(ScreenshotInkStroke(points: activeStroke)))
+        }
+        if let activeRectangle {
+            let rect = Self.box(from: activeRectangle.start, to: activeRectangle.end)
+            if rect.width > 0 || rect.height > 0 {
+                visible.append(.rectangle(rect))
+            }
+        }
+        return visible
     }
 
     public var confirmableRect: CGRect? {
@@ -130,7 +140,7 @@ public struct ScreenshotSelectionModel {
         guard activeDrag == nil, isLocked, let bounds = selection, Self.containsInclusive(bounds, point) else {
             return false
         }
-        endStroke()
+        endActiveMark()
         activeStroke = [point]
         return true
     }
@@ -139,27 +149,55 @@ public struct ScreenshotSelectionModel {
         guard activeDrag == nil, isLocked, let bounds = selection, let last = activeStroke.last, Self.isFinite(point) else {
             return
         }
-        let clamped = CGPoint(
-            x: min(max(point.x, bounds.minX), bounds.maxX),
-            y: min(max(point.y, bounds.minY), bounds.maxY)
-        )
-        guard Self.isFinite(clamped), hypot(clamped.x - last.x, clamped.y - last.y) >= 0.5 else { return }
+        let clamped = Self.clamped(point, to: bounds)
+        guard hypot(clamped.x - last.x, clamped.y - last.y) >= 0.5 else { return }
         activeStroke.append(clamped)
     }
 
     public mutating func endStroke() {
         guard !activeStroke.isEmpty else { return }
-        strokes.append(ScreenshotInkStroke(points: activeStroke))
+        marks.append(.pen(ScreenshotInkStroke(points: activeStroke)))
         activeStroke = []
     }
 
-    public mutating func undoStroke() {
-        if !activeStroke.isEmpty {
-            activeStroke = []
+    /// Starts a hollow rectangle when the point lies inside the locked selection.
+    public mutating func beginRectangle(at point: CGPoint) -> Bool {
+        guard activeDrag == nil, isLocked, let bounds = selection, Self.containsInclusive(bounds, point) else {
+            return false
+        }
+        endActiveMark()
+        activeRectangle = (point, point)
+        return true
+    }
+
+    public mutating func extendRectangle(to point: CGPoint) {
+        guard activeDrag == nil, isLocked, let bounds = selection, activeRectangle != nil, Self.isFinite(point) else {
             return
         }
-        guard !strokes.isEmpty else { return }
-        strokes.removeLast()
+        activeRectangle?.end = Self.clamped(point, to: bounds)
+    }
+
+    public mutating func endRectangle() {
+        guard let activeRectangle else { return }
+        self.activeRectangle = nil
+        let rect = Self.box(from: activeRectangle.start, to: activeRectangle.end)
+        guard rect.width >= Self.minimumSize, rect.height >= Self.minimumSize else { return }
+        marks.append(.rectangle(rect))
+    }
+
+    public mutating func endActiveMark() {
+        endStroke()
+        endRectangle()
+    }
+
+    public mutating func undoMark() {
+        if !activeStroke.isEmpty || activeRectangle != nil {
+            activeStroke = []
+            activeRectangle = nil
+            return
+        }
+        guard !marks.isEmpty else { return }
+        marks.removeLast()
     }
 
     public func handle(at point: CGPoint, tolerance: CGFloat = 7) -> ScreenshotSelectionHandle? {
@@ -250,8 +288,25 @@ public struct ScreenshotSelectionModel {
     }
 
     private mutating func clearInk() {
-        strokes = []
+        marks = []
         activeStroke = []
+        activeRectangle = nil
+    }
+
+    private static func clamped(_ point: CGPoint, to bounds: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, bounds.minX), bounds.maxX),
+            y: min(max(point.y, bounds.minY), bounds.maxY)
+        )
+    }
+
+    private static func box(from start: CGPoint, to end: CGPoint) -> CGRect {
+        CGRect(
+            x: min(start.x, end.x),
+            y: min(start.y, end.y),
+            width: abs(start.x - end.x),
+            height: abs(start.y - end.y)
+        )
     }
 
     private static func containsInclusive(_ rect: CGRect, _ point: CGPoint) -> Bool {

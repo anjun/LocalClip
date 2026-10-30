@@ -40,9 +40,9 @@ extension LocalClipTestRunner {
         func decode(
             _ region: CGRect,
             _ snapshots: [ScreenshotDisplaySnapshot],
-            strokes: [ScreenshotInkStroke] = []
+            marks: [ScreenshotMark] = []
         ) -> (CGImage, NSDictionary)? {
-            guard let data = ScreenshotSnapshotRenderer.pngData(for: region, snapshots: snapshots, strokes: strokes),
+            guard let data = ScreenshotSnapshotRenderer.pngData(for: region, snapshots: snapshots, marks: marks),
                   let source = CGImageSourceCreateWithData(data as CFData, nil),
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) else {
@@ -147,19 +147,19 @@ extension LocalClipTestRunner {
         }
 
         expect(ScreenshotSnapshotRenderer.pngData(for: frame, snapshots: [normal])
-               == ScreenshotSnapshotRenderer.pngData(for: frame, snapshots: [normal], strokes: []),
+               == ScreenshotSnapshotRenderer.pngData(for: frame, snapshots: [normal], marks: []),
                "an empty pen leaves the captured PNG unchanged")
-        let line = ScreenshotInkStroke(points: [CGPoint(x: 60, y: 10), CGPoint(x: 80, y: 10)])
-        let dot = ScreenshotInkStroke(points: [CGPoint(x: 20, y: 50)])
-        if let (image, _) = decode(frame, [normal], strokes: [line, dot]) {
+        let line = ScreenshotMark.pen(ScreenshotInkStroke(points: [CGPoint(x: 60, y: 10), CGPoint(x: 80, y: 10)]))
+        let dot = ScreenshotMark.pen(ScreenshotInkStroke(points: [CGPoint(x: 20, y: 50)]))
+        if let (image, _) = decode(frame, [normal], marks: [line, dot]) {
             expectInk(image, 70, 10, "a horizontal pen stroke is burned into the top of the PNG")
             expectPixel(image, 90, 10, green, "pixels beyond the stroke keep their original color")
             expectPixel(image, 70, 30, green, "the pen does not flip a top stroke to the bottom")
             expectInk(image, 20, 50, "a click becomes a visible dot in the captured PNG")
             expectPixel(image, 20, 70, blue, "a dot does not recolor the rest of its quadrant")
         }
-        let outside = ScreenshotInkStroke(points: [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 10)])
-        if let (image, _) = decode(CGRect(x: 0, y: 40, width: 100, height: 40), [normal], strokes: [outside]) {
+        let outside = ScreenshotMark.pen(ScreenshotInkStroke(points: [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 10)]))
+        if let (image, _) = decode(CGRect(x: 0, y: 40, width: 100, height: 40), [normal], marks: [outside]) {
             var leaked = false
             for y in stride(from: 0, to: image.height, by: 2) {
                 for x in stride(from: 0, to: image.width, by: 2) where isInk(image, x, y) {
@@ -168,8 +168,14 @@ extension LocalClipTestRunner {
             }
             expect(!leaked, "a stroke outside the crop is not burned into the PNG")
         }
-        let retinaStroke = ScreenshotInkStroke(points: [CGPoint(x: 58, y: 47), CGPoint(x: 72, y: 47)])
-        if let (image, _) = decode(CGRect(x: 55, y: 45, width: 20, height: 15), [retina], strokes: [retinaStroke]) {
+        let frameBox = ScreenshotMark.rectangle(CGRect(x: 60, y: 10, width: 30, height: 20))
+        if let (image, _) = decode(frame, [normal], marks: [frameBox]) {
+            expectInk(image, 75, 10, "a rectangle strokes its top edge into the PNG")
+            expectPixel(image, 75, 20, green, "a rectangle leaves its interior unfilled")
+            expectPixel(image, 95, 15, green, "a rectangle does not recolor pixels outside its frame")
+        }
+        let retinaStroke = ScreenshotMark.pen(ScreenshotInkStroke(points: [CGPoint(x: 58, y: 47), CGPoint(x: 72, y: 47)]))
+        if let (image, _) = decode(CGRect(x: 55, y: 45, width: 20, height: 15), [retina], marks: [retinaStroke]) {
             expect(image.width == 40 && image.height == 30, "pen marks keep the Retina crop size")
             expectInk(image, 20, 4, "a Retina pen stroke lands on the top edge of the crop")
             expectPixel(image, 20, 24, yellow, "a Retina pen stroke stays off the bottom of the crop")

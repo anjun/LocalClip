@@ -552,7 +552,7 @@ struct SettingsView: View {
 
                 settingsGroup(
                     title: "快速截屏",
-                    subtitle: "框选后可用画笔圈出重点，再复制到剪贴板并加入历史"
+                    subtitle: "锁定选区后，用方框或画笔标记，再复制到剪贴板并加入历史"
                 ) {
                     VStack(alignment: .leading, spacing: 12) {
                         settingsRow {

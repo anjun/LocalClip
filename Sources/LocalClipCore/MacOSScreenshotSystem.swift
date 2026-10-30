@@ -111,7 +111,7 @@ public final class MacOSScreenshotSystem: ScreenshotSystem, @unchecked Sendable 
             guard let data = ScreenshotSnapshotRenderer.pngData(
                 for: selection.region,
                 snapshots: snapshots,
-                strokes: selection.strokes
+                marks: selection.marks
             ) else {
                 throw SelectionError(message: "无法生成选区图片")
             }

@@ -217,62 +217,90 @@ extension LocalClipTestRunner {
             windows: [ScreenshotWindowCandidate(id: 1, frame: CGRect(x: 100, y: 100, width: 100, height: 100))]
         )
         preview.updateHover(at: CGPoint(x: 150, y: 150))
-        expect(!preview.beginStroke(at: CGPoint(x: 150, y: 150)) && preview.strokes.isEmpty,
+        expect(!preview.beginStroke(at: CGPoint(x: 150, y: 150)) && preview.marks.isEmpty,
                "pen cannot mark a hover preview before it is locked")
+        expect(!preview.beginRectangle(at: CGPoint(x: 150, y: 150)),
+               "a rectangle cannot mark a hover preview before it is locked")
 
         var model = lockedScreenshotFixture()
         expect(!model.beginStroke(at: CGPoint(x: CGFloat.nan, y: 150)) && !model.beginStroke(at: CGPoint(x: 99, y: 150)),
                "pen ignores non-finite points and points outside the selection")
         expect(model.beginStroke(at: CGPoint(x: 200, y: 150)), "pen can start on the selection's inclusive edge")
         model.endStroke()
-        expect(model.strokes == [ScreenshotInkStroke(points: [CGPoint(x: 200, y: 150)])],
+        expect(model.marks == [.pen(ScreenshotInkStroke(points: [CGPoint(x: 200, y: 150)]))],
                "a click leaves a one-point mark")
-        model.undoStroke()
+        model.undoMark()
 
         expect(model.beginStroke(at: CGPoint(x: 150, y: 150)), "pen can start inside a locked selection")
         model.extendStroke(to: CGPoint(x: 150.2, y: 150))
         model.extendStroke(to: CGPoint(x: 500, y: -20))
-        expect(model.strokes.isEmpty && model.inkStrokes.count == 1, "an in-progress stroke is visible before mouse-up")
-        expect(model.inkStrokes[0].points == [CGPoint(x: 150, y: 150), CGPoint(x: 200, y: 100)],
-               "the pen clamps to the selection and drops sub-point jitter")
-        model.undoStroke()
-        expect(model.inkStrokes.isEmpty && !model.canUndoInk, "undo discards the stroke currently being drawn")
+        expect(model.marks.isEmpty && model.visibleMarks.count == 1, "an in-progress stroke is visible before mouse-up")
+        expect(model.visibleMarks == [.pen(ScreenshotInkStroke(points: [
+            CGPoint(x: 150, y: 150), CGPoint(x: 200, y: 100)
+        ]))], "the pen clamps to the selection and drops sub-point jitter")
+        model.undoMark()
+        expect(model.visibleMarks.isEmpty && !model.canUndoInk, "undo discards the stroke currently being drawn")
 
         expect(model.beginStroke(at: CGPoint(x: 110, y: 110)), "pen can start the first of two strokes")
         model.endStroke()
         expect(model.beginStroke(at: CGPoint(x: 160, y: 160)), "pen can start a second stroke")
         model.extendStroke(to: CGPoint(x: 180, y: 170))
         model.endStroke()
-        model.undoStroke()
-        expect(model.strokes.count == 1 && model.strokes[0].points == [CGPoint(x: 110, y: 110)],
+        model.undoMark()
+        expect(model.marks == [.pen(ScreenshotInkStroke(points: [CGPoint(x: 110, y: 110)]))],
                "undo removes only the last committed stroke")
-        model.undoStroke()
-        model.undoStroke()
-        expect(model.strokes.isEmpty, "undo with nothing marked does nothing")
+        model.undoMark()
+        model.undoMark()
+        expect(model.marks.isEmpty, "undo with nothing marked does nothing")
 
         expect(model.beginStroke(at: CGPoint(x: 120, y: 120)), "pen can mark before the selection moves")
         model.extendStroke(to: CGPoint(x: 160, y: 150))
         model.endStroke()
         model.beginDrag(at: CGPoint(x: 140, y: 140))
         model.endDrag(at: CGPoint(x: 170, y: 160))
-        expect(model.strokes.count == 1 && model.selection == CGRect(x: 130, y: 120, width: 100, height: 100),
+        expect(model.marks.count == 1 && model.selection == CGRect(x: 130, y: 120, width: 100, height: 100),
                "moving the selection keeps marks on the screen")
         model.beginDrag(at: CGPoint(x: 230, y: 170))
         model.endDrag(at: CGPoint(x: 260, y: 170))
-        expect(model.strokes.count == 1, "resizing keeps existing marks")
+        expect(model.marks.count == 1, "resizing keeps existing marks")
         model.beginDrag(at: CGPoint(x: 150, y: 150))
         expect(!model.beginStroke(at: CGPoint(x: 160, y: 160)), "a selection drag cannot also start a pen stroke")
         model.endDrag(at: CGPoint(x: 150, y: 150))
         model.beginDrag(at: CGPoint(x: 10, y: 10))
         model.endDrag(at: CGPoint(x: 80, y: 70))
-        expect(model.strokes.isEmpty && model.selection == CGRect(x: 10, y: 10, width: 70, height: 60),
+        expect(model.marks.isEmpty && model.selection == CGRect(x: 10, y: 10, width: 70, height: 60),
                "a new free selection discards marks from the previous region")
 
         var reset = lockedScreenshotFixture()
         expect(reset.beginStroke(at: CGPoint(x: 150, y: 150)), "pen can mark a selection that will be reset")
         reset.endStroke()
         reset.reset()
-        expect(reset.strokes.isEmpty && !reset.canUndoInk, "reset clears pen marks with the selection")
+        expect(reset.marks.isEmpty && !reset.canUndoInk, "reset clears pen marks with the selection")
+
+        var box = lockedScreenshotFixture()
+        expect(!box.beginRectangle(at: CGPoint(x: 50, y: 50)), "a rectangle cannot start outside the selection")
+        expect(box.beginRectangle(at: CGPoint(x: 110, y: 120)), "a rectangle can start inside a locked selection")
+        box.extendRectangle(to: CGPoint(x: 180, y: 190))
+        expect(box.marks.isEmpty && box.visibleMarks == [.rectangle(CGRect(x: 110, y: 120, width: 70, height: 70))],
+               "an in-progress rectangle follows the pointer")
+        box.extendRectangle(to: CGPoint(x: 500, y: 500))
+        box.endRectangle()
+        expect(box.marks == [.rectangle(CGRect(x: 110, y: 120, width: 90, height: 80))],
+               "a rectangle clamps to the selection")
+        expect(box.beginRectangle(at: CGPoint(x: 130, y: 140)), "a second rectangle can start after the first is committed")
+        box.extendRectangle(to: CGPoint(x: 131, y: 141))
+        box.endRectangle()
+        expect(box.marks.count == 1, "a tiny drag does not leave a rectangle")
+        box.undoMark()
+        expect(box.marks.isEmpty, "undo removes a rectangle")
+        expect(box.beginStroke(at: CGPoint(x: 150, y: 150)), "a pen mark can precede a rectangle")
+        box.endStroke()
+        expect(box.beginRectangle(at: CGPoint(x: 120, y: 120)), "a rectangle can follow a pen mark")
+        box.extendRectangle(to: CGPoint(x: 160, y: 170))
+        box.endRectangle()
+        box.undoMark()
+        expect(box.marks == [.pen(ScreenshotInkStroke(points: [CGPoint(x: 150, y: 150)]))],
+               "undo removes the rectangle and keeps the earlier pen mark")
 
         expect(ScreenshotInkPath.elements(for: []).isEmpty, "an empty stroke has nothing to draw")
         expect(ScreenshotInkPath.elements(for: [CGPoint(x: CGFloat.nan, y: 0), CGPoint(x: 3, y: 4)])

@@ -13,7 +13,7 @@ Local-only clipboard history for the macOS menu bar. Text and images stay on you
 - **On-device only** — history lives under `~/Library/Application Support/LocalClip/`; no sync, no analytics
 - **Menu bar app** — no Dock icon; open when you need it
 - **Text + images** — screenshots and copy content in one place
-- **Quick capture** — press **⌥A** to select a window or free region, resize it, circle details with the pen, then copy the PNG into history
+- **Quick capture** — press **⌥A** to select a window or free region, then mark it with a rectangle or the pen before copying it into history
 - **Paste in one step** — click or Return writes the pasteboard and auto-pastes (Accessibility)
 - **Auditable** — MIT-licensed; talks to GitHub only when you **Check for Updates**
 
@@ -29,7 +29,7 @@ Requires macOS 13+ (universal arm64 + x86_64 builds).
 
 ## Quick capture
 
-Press **⌥A** (customizable) to capture. Hover over a window to select its bounds, then click to lock the selection. Drag an edge or one of the eight handles to resize, or drag inside the selection to move it. You can also drag directly to draw a free region. After the selection is locked, click **Pen** and drag to circle what you want to mark; **⌘Z** or **Undo** removes the last stroke. Press **Enter**, double-click the selection, or click **Done** to copy (a double-click draws instead while the pen is on). **Escape** cancels, or leaves the pen first when it is on. Right-click starts a new selection.
+Press **⌥A** (customizable) to capture. Hover over a window to select its bounds, then click to lock the selection. Drag an edge or one of the eight handles to resize, or drag inside the selection to move it. You can also drag directly to draw a free region. After the selection is locked, an icon toolbar appears beside it: the rectangle draws an empty box, the pen circles details, and undo removes the last mark. Press **Enter**, double-click the selection, or click the checkmark to copy. While a markup tool is on, dragging draws a mark instead. **Escape** cancels, or leaves the active tool first. Right-click starts a new selection.
 
 The selector shows the screen as it looked when capture began. The completed PNG is copied to the system pasteboard and stored as a normal image in LocalClip history, without saving to the Desktop. Temporary screen images are deleted immediately after they are read.
 
