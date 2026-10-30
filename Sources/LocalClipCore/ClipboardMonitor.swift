@@ -36,7 +36,10 @@ public final class ClipboardMonitor: ClipboardMonitoring, @unchecked Sendable {
     public func start() {
         stop()
         lastChangeCount = pasteboard.changeCount
-        let timer = DispatchSource.makeTimerSource(queue: queue)
+        // Run on the main queue: the tick only compares changeCount and hops
+        // back here for real work, and frontmost tracking needs NSWorkspace
+        // (AppKit, main-thread API).
+        let timer = DispatchSource.makeTimerSource(queue: .main)
         // Fire soon so we track frontmost even before first pasteboard change.
         timer.schedule(deadline: .now() + 0.05, repeating: pollInterval)
         timer.setEventHandler { [weak self] in
@@ -65,11 +68,9 @@ public final class ClipboardMonitor: ClipboardMonitoring, @unchecked Sendable {
             return
         }
 
-        // NSPasteboard has main-thread affinity. Read there, then ingest on this
-        // background queue (ImageIO thumbs are thread-safe).
-        DispatchQueue.main.async { [weak self] in
-            self?.readAndIngest()
-        }
+        // Already on the main queue (see timer setup): read the pasteboard
+        // here, then ingest back on the utility queue.
+        readAndIngest()
     }
 
     private func readAndIngest() {

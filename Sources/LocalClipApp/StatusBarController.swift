@@ -67,7 +67,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.model.refreshAccessibility()
+                guard let self else { return }
+                self.model.refreshAccessibility()
+                // TCC trust is per-process: once granted there is nothing left
+                // to poll, and a later revocation only takes effect on relaunch.
+                if self.model.accessibilityTrusted {
+                    self.permissionTimer?.invalidate()
+                    self.permissionTimer = nil
+                }
             }
         }
         RunLoop.main.add(permissionTimer!, forMode: .common)

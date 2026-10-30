@@ -138,6 +138,10 @@ struct HistoryPanel: View {
             model.frontmostTracker.observeFrontmost()
             installKeyMonitor()
             isSearchFocused = true
+            prewarmThumbs(for: model.items)
+        }
+        .onChange(of: model.items) { items in
+            prewarmThumbs(for: items)
         }
         .onChange(of: model.searchFocusNonce) { _ in
             isSearchFocused = false
@@ -148,6 +152,15 @@ struct HistoryPanel: View {
         .onDisappear {
             removeKeyMonitor()
         }
+    }
+
+    private func prewarmThumbs(for items: [ClipboardItem]) {
+        ThumbImageCache.prewarm(urls: items.compactMap { item in
+            guard item.kind == .image,
+                  let rel = item.thumbPath ?? item.imagePath
+            else { return nil }
+            return model.store.absoluteURL(forRelativePath: rel)
+        })
     }
 
     private func installKeyMonitor() {

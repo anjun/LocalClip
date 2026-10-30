@@ -124,7 +124,7 @@ private extension NSAppearance {
 }
 
 /// In-memory thumbnail cache — list must never re-decode disk images every frame.
-@MainActor
+/// NSCache is thread-safe, so decodes can happen off the main thread.
 enum ThumbImageCache {
     private static let cache: NSCache<NSString, NSImage> = {
         let c = NSCache<NSString, NSImage>()
@@ -140,6 +140,20 @@ enum ThumbImageCache {
         let cost = max(1, Int(img.size.width * img.size.height * 4))
         cache.setObject(img, forKey: key, cost: cost)
         return img
+    }
+
+    /// Decode thumbnails off-main so opening a long history does not stall
+    /// the UI with synchronous disk reads on every cache miss.
+    static func prewarm(urls: [URL]) {
+        Task.detached(priority: .utility) {
+            for url in urls {
+                let key = url.path as NSString
+                if cache.object(forKey: key) != nil { continue }
+                guard let img = NSImage(contentsOf: url) else { continue }
+                let cost = max(1, Int(img.size.width * img.size.height * 4))
+                cache.setObject(img, forKey: key, cost: cost)
+            }
+        }
     }
 
     static func clear() {
